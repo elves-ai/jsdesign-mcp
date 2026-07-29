@@ -6,17 +6,20 @@ import path from 'node:path';
 import type { Server } from 'node:http';
 import { createHttpApp } from './http.js';
 import { DesignStore } from './store.js';
+import { PluginBridge } from './bridge.js';
 
 describe('HTTP API', () => {
   let server: Server;
   let base: string;
   let store: DesignStore;
+  let bridge: PluginBridge;
   let tmp: string;
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jsdesign-http-'));
     store = new DesignStore(tmp);
-    const app = createHttpApp(store);
+    bridge = new PluginBridge();
+    const app = createHttpApp(store, bridge);
     await new Promise<void>((resolve) => {
       server = app.listen(0, '127.0.0.1', () => resolve());
     });
@@ -38,6 +41,7 @@ describe('HTTP API', () => {
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.hasData, false);
+    assert.equal(body.pluginConnected, false);
   });
 
   it('POST /ingest rejects invalid body', async () => {

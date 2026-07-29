@@ -3,100 +3,154 @@
 <head>
   <meta charset="UTF-8" />
   <style>
-    body { font-family: "PingFang SC", sans-serif; padding: 16px; color: #222; background: #f7f7f8; }
+    body {
+      font-family: "PingFang SC", sans-serif;
+      padding: 16px;
+      color: #222;
+      background: #f7f7f8;
+      margin: 0;
+    }
     h1 { font-size: 16px; margin: 0 0 4px; }
-    .sub { font-size: 12px; color: #888; margin-bottom: 16px; }
-    label { font-size: 12px; color: #666; display: block; margin-bottom: 4px; }
-    input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 12px; box-sizing: border-box; }
-    button { width: 100%; padding: 12px; border: 0; border-radius: 8px; background: #2f6bff; color: #fff; font-size: 14px; cursor: pointer; }
-    button:disabled { opacity: 0.6; cursor: not-allowed; }
-    .status { margin-top: 12px; padding: 10px; border-radius: 6px; font-size: 12px; display: none; white-space: pre-wrap; }
-    .status.show { display: block; }
-    .ok { background: #eefbf0; color: #1b7a2d; }
-    .err { background: #feeeee; color: #b42318; }
-    .info { background: #eef2ff; color: #2f4bbf; }
+    .sub { font-size: 12px; color: #888; margin-bottom: 14px; }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: #fff;
+      border: 1px solid #e6e6e6;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #c4c4c4;
+      flex-shrink: 0;
+    }
+    .dot.on { background: #22a06b; }
+    .dot.off { background: #c4c4c4; }
+    .actions { display: flex; gap: 8px; }
+    button {
+      flex: 1;
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #connect { background: #2f6bff; color: #fff; }
+    #disconnect { background: #fff; color: #333; border: 1px solid #ddd; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .hint { margin-top: 12px; font-size: 11px; color: #999; line-height: 1.5; }
   </style>
 </head>
 <body>
   <h1>JsDesign → Cursor</h1>
-  <p class="sub">发送当前选中 Frame 到本地 MCP</p>
-  <label>MCP Server</label>
-  <input id="url" value="http://127.0.0.1:3847" />
-  <button id="send">发送选中到 Cursor</button>
-  <div id="status" class="status"></div>
+  <p class="sub">连接本地 MCP 后，把设计链接发给 AI 即可</p>
+
+  <div class="status-row">
+    <span id="dot" class="dot off"></span>
+    <span id="statusText">未连接</span>
+  </div>
+
+  <div class="actions">
+    <button id="connect">连接</button>
+    <button id="disconnect" disabled>断开连接</button>
+  </div>
+
+  <p class="hint">
+    默认 ws://127.0.0.1:3847/plugin<br />
+    复制含 linkelement 的链接给 Cursor，例如：<br />
+    …&amp;linkelement=82-2142
+  </p>
+
   <script>
-    var statusEl = document.getElementById('status');
-    var urlEl = document.getElementById('url');
-    var sendBtn = document.getElementById('send');
+    var WS_URL = 'ws://127.0.0.1:3847/plugin';
+    var ws = null;
+    var connected = false;
 
-    function show(type, text) {
-      statusEl.className = 'status show ' + type;
-      statusEl.textContent = text;
+    var dot = document.getElementById('dot');
+    var statusText = document.getElementById('statusText');
+    var connectBtn = document.getElementById('connect');
+    var disconnectBtn = document.getElementById('disconnect');
+
+    function setStatus(on, text) {
+      connected = on;
+      dot.className = 'dot ' + (on ? 'on' : 'off');
+      statusText.textContent = text;
+      connectBtn.disabled = on;
+      disconnectBtn.disabled = !on;
     }
 
-    function serverBase() {
-      return (urlEl.value || '').replace(/\/$/, '');
+    function connect() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      setStatus(false, '连接中…');
+      try {
+        ws = new WebSocket(WS_URL);
+      } catch (e) {
+        setStatus(false, '无法创建连接');
+        return;
+      }
+
+      ws.onopen = function () {
+        ws.send(JSON.stringify({ type: 'hello', role: 'plugin' }));
+        setStatus(true, '已连接');
+      };
+
+      ws.onclose = function () {
+        ws = null;
+        setStatus(false, '未连接');
+      };
+
+      ws.onerror = function () {
+        setStatus(false, '连接失败（请确认 Cursor MCP 已启动）');
+      };
+
+      ws.onmessage = function (event) {
+        var msg;
+        try {
+          msg = JSON.parse(event.data);
+        } catch (e) {
+          return;
+        }
+        if (msg.type === 'fetch-node') {
+          parent.postMessage(
+            {
+              pluginMessage: {
+                type: 'fetch-node',
+                requestId: msg.requestId,
+                nodeId: msg.nodeId,
+                meta: msg.meta || {},
+              },
+            },
+            '*'
+          );
+        }
+      };
     }
 
-    sendBtn.onclick = function () {
-      show('info', '正在读取选中…');
-      parent.postMessage({ pluginMessage: { type: 'export-selection' } }, '*');
-    };
+    function disconnect() {
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      setStatus(false, '未连接');
+    }
+
+    connectBtn.onclick = connect;
+    disconnectBtn.onclick = disconnect;
 
     onmessage = function (event) {
       var msg = event.data && event.data.pluginMessage;
-      if (!msg) return;
-      if (msg.type === 'error') {
-        show('err', msg.message || '未知错误');
-        return;
-      }
-      if (msg.type === 'selection-payload') {
-        show('info', '正在发送到 MCP…');
-        fetch(serverBase() + '/ingest', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(msg.data),
-        })
-          .then(function (res) {
-            return res.json().then(function (body) {
-              return { res: res, body: body };
-            });
-          })
-          .then(function (r) {
-            if (!r.res.ok) {
-              throw new Error((r.body && r.body.error) || ('HTTP ' + r.res.status));
-            }
-            show(
-              'ok',
-              '已发送：' +
-                (r.body.rootName || 'ok') +
-                (r.body.truncated ? '（已截断）' : '')
-            );
-          })
-          .catch(function (err) {
-            show(
-              'err',
-              '发送失败：' +
-                (err && err.message ? err.message : err) +
-                '\n请确认已启动 mcp-server（npm run start）'
-            );
-          });
-      }
+      if (!msg || msg.type !== 'fetch-node-result') return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify(msg));
     };
-
-    fetch(serverBase() + '/health')
-      .then(function (r) { return r.json(); })
-      .then(function (b) {
-        show(
-          'info',
-          b.ok
-            ? 'MCP 已连接' + (b.hasData ? '（已有缓存数据）' : '')
-            : 'MCP 异常'
-        );
-      })
-      .catch(function () {
-        show('info', 'MCP 未启动（发送前请先 npm run start）');
-      });
   </script>
 </body>
 </html>

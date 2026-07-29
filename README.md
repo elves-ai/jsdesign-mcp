@@ -1,37 +1,26 @@
 # JsDesign → Cursor MCP
 
-从[即时设计](https://js.design)选中 Frame，导出精确结构/样式，经本地 MCP 提供给 Cursor，用于 design-to-code。
+从[即时设计](https://js.design)按**设计链接**拉取精确节点数据，经本地 MCP 提供给 Cursor 做 design-to-code。
 
-## 架构
+## 工作方式
+
+1. Cursor 启动 MCP（含本机 HTTP + WebSocket）  
+2. 即时设计桌面端打开本插件 → 点 **连接**  
+3. 复制带 `linkelement` 的链接发给 AI，例如：  
+   `https://js.design/f/tFH0Pj?p=jku4Hd4Ps7&mode=design&linkelement=82-2142`  
+4. AI 调用 `get_node_by_url` → MCP 经 WebSocket 让插件 `getNodeById('82:2142')` → 返回结构/样式  
 
 ```
-即时设计编辑器                    本机                         Cursor
-┌─────────────────┐          ┌──────────────────┐          ┌────────────┐
-│ plugin/         │──HTTP──►│ mcp-server        │◄──stdio──│ AI Agent   │
-│ 读选中 Frame     │ 127.0.0.1│ 缓存 DesignPayload│   MCP    │ 按当前项目改│
-└─────────────────┘  :3847   └──────────────────┘          └────────────┘
+即时设计插件 (已连接)          本机 MCP                    Cursor
+┌─────────────────┐  WS     ┌──────────────────┐  stdio  ┌────────┐
+│ 连接 / 断开      │◄──────►│ :3847 /plugin     │◄───────►│ Agent  │
+│ 按 nodeId 导出   │        │ get_node_by_url   │         │ 贴链接 │
+└─────────────────┘        └──────────────────┘         └────────┘
 ```
 
-## 1. 启动 MCP Server
+## 1. Cursor MCP 配置
 
-```bash
-cd mcp-server
-npm install --registry https://registry.npmjs.org/
-npm run build
-npm start
-```
-
-探活：
-
-```bash
-curl -s http://127.0.0.1:3847/health
-```
-
-端口可用环境变量覆盖：`JSDESIGN_MCP_PORT=3848 npm start`。
-
-## 2. 配置 Cursor MCP
-
-在 Cursor MCP 设置中加入（路径按本机调整）：
+`~/.cursor/mcp.json`：
 
 ```json
 {
@@ -44,46 +33,43 @@ curl -s http://127.0.0.1:3847/health
 }
 ```
 
-重启 MCP 后应看到工具：
+改代码后执行 `cd mcp-server && npm run build`，再在 Cursor MCP 面板重启 `jsdesign`。
+
+## 2. 导入即时设计插件（桌面端）
+
+1. 安装 [桌面客户端](https://js.design/download)  
+2. **插件 → 开发者 → 导入插件**  
+3. 选择 `plugin/manifest.json`  
+4. 运行插件 → 点 **连接**（状态点变绿）
+
+## 3. MCP 工具
 
 | Tool | 说明 |
 |------|------|
-| `get_selection_overview` | 树概览 + tokens |
-| `get_node` | 按 id / name 取节点 |
-| `get_design_tokens` | 颜色 / 字体 / 间距 / 圆角 |
-| `list_nodes` | 扁平节点列表 |
-
-## 3. 导入即时设计插件
-
-1. 打开即时设计编辑器  
-2. 菜单 → 插件 → 开发者模式 → 导入本地插件  
-3. 选择本仓库的 `plugin/` 目录（含 `manifest.json`）
-
-## 4. 使用流程
-
-1. `npm start` 保持 MCP 运行  
-2. 在即时设计中选中一个 Frame  
-3. 运行插件 → 点击「发送选中到 Cursor」  
-4. 在 Cursor 对话中让 AI 先调用 `get_selection_overview`，再按当前项目生成代码  
+| `get_node_by_url` | **主工具**：解析链接/`linkelement`，向已连接插件拉节点 |
+| `get_plugin_status` | 插件是否已连接 |
+| `get_selection_overview` | 最近一次拉取的概览 |
+| `get_node` / `list_nodes` / `get_design_tokens` | 基于最近一次缓存查询 |
 
 ## 开发
 
 ```bash
 cd mcp-server
+npm install --registry https://registry.npmjs.org/
 npm test
+npm run build
 ```
 
-缓存文件默认写在 `~/.jsdesign-mcp/latest.json`。
+探活：`curl -s http://127.0.0.1:3847/health`（看 `pluginConnected`）。
 
 ## 故障排查
 
 | 现象 | 处理 |
 |------|------|
-| 插件提示发送失败 | 确认 `npm start` 已运行，URL 为 `http://127.0.0.1:3847` |
-| MCP 工具提示暂无数据 | 先在插件里成功发送一次 |
-| 端口占用 | `JSDESIGN_MCP_PORT=3848`，并在插件里改 URL |
-| `npm install` 403 | 使用 `npm install --registry https://registry.npmjs.org/` |
-| health `hasData: false` | 尚未 ingest，或缓存被清空 |
+| 插件「连接失败」 | Cursor MCP `jsdesign` 需已连接（会监听 3847） |
+| `get_node_by_url` 提示未连接 | 插件点「连接」，保持插件窗口打开 |
+| 找不到节点 | 链接必须来自**当前打开的文件**；检查 `linkelement` |
+| 改插件不生效 | 关掉插件再开，或重新导入 |
 
 ## License
 

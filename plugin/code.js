@@ -264,44 +264,34 @@ function collectTokens(root) {
   };
 }
 
-jsDesign.showUI(__html__, { width: 360, height: 280 });
+function resolveNode(nodeId) {
+  if (!nodeId) return null;
+  var candidates = [nodeId];
+  if (nodeId.indexOf(':') >= 0) candidates.push(nodeId.replace(/:/g, '-'));
+  if (nodeId.indexOf('-') >= 0) candidates.push(nodeId.replace(/-/g, ':'));
 
-jsDesign.ui.onmessage = function (msg) {
-  if (!msg || msg.type !== 'export-selection') return;
-
-  var selection = jsDesign.currentPage.selection;
-  if (!selection || selection.length === 0) {
-    jsDesign.ui.postMessage({
-      type: 'error',
-      message: '请先选中一个 Frame 或节点',
-    });
-    return;
-  }
-
-  var root = null;
-  for (var i = 0; i < selection.length; i++) {
-    if (selection[i].type === 'FRAME') {
-      root = selection[i];
-      break;
+  for (var i = 0; i < candidates.length; i++) {
+    try {
+      var n = jsDesign.getNodeById(candidates[i]);
+      if (n) return n;
+    } catch (e) {
+      // try next
     }
   }
-  if (!root) root = selection[0];
+  return null;
+}
 
+function buildPayloadFromNode(root, meta) {
   var state = { count: 0, truncated: false };
   var node = normalizeNode(root, state);
-  if (!node) {
-    jsDesign.ui.postMessage({
-      type: 'error',
-      message: '导出失败：节点为空或已超过限制',
-    });
-    return;
-  }
+  if (!node) return null;
 
   var payload = {
     meta: {
       pageName: jsDesign.currentPage.name,
       exportedAt: new Date().toISOString(),
       truncated: state.truncated,
+      fileName: (meta && meta.fileKey) || undefined,
     },
     tokens: collectTokens(node),
     root: node,
@@ -309,11 +299,62 @@ jsDesign.ui.onmessage = function (msg) {
 
   try {
     if (jsDesign.root && jsDesign.root.name) {
-      payload.meta.fileName = jsDesign.root.name;
+      payload.meta.fileName = payload.meta.fileName || jsDesign.root.name;
+    }
+    if (jsDesign.fileKey) {
+      payload.meta.fileName = payload.meta.fileName || jsDesign.fileKey;
     }
   } catch (e) {
-    // optional fileName
+    // optional
   }
 
-  jsDesign.ui.postMessage({ type: 'selection-payload', data: payload });
+  return payload;
+}
+
+jsDesign.showUI(__html__, { width: 360, height: 260 });
+
+jsDesign.ui.onmessage = function (msg) {
+  if (!msg || msg.type !== 'fetch-node') return;
+
+  var requestId = msg.requestId;
+  var nodeId = msg.nodeId;
+  var meta = msg.meta || {};
+
+  try {
+    var root = resolveNode(nodeId);
+    if (!root) {
+      jsDesign.ui.postMessage({
+        type: 'fetch-node-result',
+        requestId: requestId,
+        ok: false,
+        error: '找不到节点 ' + nodeId + '。请确认链接来自当前打开的文件，且 linkelement 有效。',
+      });
+      return;
+    }
+
+    var payload = buildPayloadFromNode(root, meta);
+    if (!payload) {
+      jsDesign.ui.postMessage({
+        type: 'fetch-node-result',
+        requestId: requestId,
+        ok: false,
+        error: '导出节点失败',
+      });
+      return;
+    }
+
+    jsDesign.ui.postMessage({
+      type: 'fetch-node-result',
+      requestId: requestId,
+      ok: true,
+      payload: payload,
+    });
+  } catch (err) {
+    jsDesign.ui.postMessage({
+      type: 'fetch-node-result',
+      requestId: requestId,
+      ok: false,
+      error: (err && err.message) || String(err),
+    });
+  }
 };

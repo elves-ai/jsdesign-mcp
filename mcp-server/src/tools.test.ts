@@ -1,6 +1,11 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { handleToolCall, toolDefinitions } from './tools.js';
+import { DesignStore } from './store.js';
+import { PluginBridge } from './bridge.js';
 import type { DesignPayload } from './types.js';
 
 const payload: DesignPayload = {
@@ -31,33 +36,71 @@ const payload: DesignPayload = {
 };
 
 describe('MCP tools', () => {
-  it('lists four tools', () => {
-    assert.equal(toolDefinitions.length, 4);
-    assert.deepEqual(
-      toolDefinitions.map((t) => t.name).sort(),
-      [
-        'get_design_tokens',
-        'get_node',
-        'get_selection_overview',
-        'list_nodes',
-      ]
-    );
+  let tmp: string;
+  let store: DesignStore;
+  let bridge: PluginBridge;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jsdesign-tools-'));
+    store = new DesignStore(tmp);
+    bridge = new PluginBridge();
   });
 
-  it('prompts when no data', () => {
-    const result = handleToolCall('get_selection_overview', {}, null);
-    assert.match(result.content[0].text, /请先在即时设计插件中发送选中/);
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('returns overview JSON', () => {
-    const result = handleToolCall('get_selection_overview', {}, payload);
+  it('lists primary url tool', () => {
+    assert.ok(toolDefinitions.some((t) => t.name === 'get_node_by_url'));
+    assert.ok(toolDefinitions.some((t) => t.name === 'get_plugin_status'));
+  });
+
+  it('prompts when no cached data', async () => {
+    const result = await handleToolCall('get_selection_overview', {}, {
+      store,
+      bridge,
+    });
+    assert.match(result.content[0].text, /get_node_by_url/);
+  });
+
+  it('returns overview from cache', async () => {
+    store.set(payload);
+    const result = await handleToolCall('get_selection_overview', {}, {
+      store,
+      bridge,
+    });
     const parsed = JSON.parse(result.content[0].text);
     assert.equal(parsed.root.name, 'Card');
   });
 
-  it('get_node by name', () => {
-    const result = handleToolCall('get_node', { name: 'Label' }, payload);
+  it('get_node by name from cache', async () => {
+    store.set(payload);
+    const result = await handleToolCall(
+      'get_node',
+      { name: 'Label' },
+      { store, bridge }
+    );
     const parsed = JSON.parse(result.content[0].text);
     assert.equal(parsed.text.characters, 'Hi');
+  });
+
+  it('get_node_by_url fails when plugin disconnected', async () => {
+    const result = await handleToolCall(
+      'get_node_by_url',
+      {
+        url: 'https://js.design/f/tFH0Pj?p=jku4Hd4Ps7&mode=design&linkelement=82-2142',
+      },
+      { store, bridge }
+    );
+    assert.match(result.content[0].text, /未连接/);
+  });
+
+  it('rejects bad url', async () => {
+    const result = await handleToolCall(
+      'get_node_by_url',
+      { url: 'https://js.design/f/tFH0Pj' },
+      { store, bridge }
+    );
+    assert.match(result.content[0].text, /无法解析/);
   });
 });
