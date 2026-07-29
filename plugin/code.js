@@ -2,6 +2,34 @@
 
 var MAX_NODES = 2000;
 
+function isMixed(v) {
+  try {
+    return typeof v === 'symbol' || v === jsDesign.mixed;
+  } catch (e) {
+    return typeof v === 'symbol';
+  }
+}
+
+/** Strip symbols / non-cloneable values before ui.postMessage */
+function toJsonSafe(value) {
+  return JSON.parse(
+    JSON.stringify(value, function (_key, v) {
+      if (typeof v === 'symbol' || typeof v === 'undefined' || typeof v === 'function') {
+        return undefined;
+      }
+      return v;
+    })
+  );
+}
+
+function safeNumber(v) {
+  return typeof v === 'number' && !isNaN(v) ? v : undefined;
+}
+
+function safeString(v) {
+  return typeof v === 'string' ? v : undefined;
+}
+
 function rgbToHex(r, g, b) {
   function h(v) {
     var s = Math.round(v * 255).toString(16);
@@ -20,19 +48,19 @@ function solidColor(paint) {
 }
 
 function extractFills(fills) {
-  if (!fills || !Array.isArray(fills)) return [];
+  if (isMixed(fills) || !fills || !Array.isArray(fills)) return [];
   var out = [];
   for (var i = 0; i < fills.length; i++) {
     var fill = fills[i];
-    if (fill.visible === false) continue;
+    if (!fill || fill.visible === false) continue;
     if (fill.type === 'SOLID') {
       var c = solidColor(fill);
       if (c) out.push(c);
     } else if (fill.type === 'IMAGE') {
       out.push({
         type: 'IMAGE',
-        ref: fill.imageHash || undefined,
-        scaleMode: fill.scaleMode,
+        ref: safeString(fill.imageHash),
+        scaleMode: safeString(fill.scaleMode),
       });
     } else if (
       fill.type === 'GRADIENT_LINEAR' ||
@@ -43,19 +71,24 @@ function extractFills(fills) {
         gradientStops: (fill.gradientStops || []).map(function (stop) {
           return {
             color: rgbToHex(stop.color.r, stop.color.g, stop.color.b),
-            position: stop.position,
+            position: safeNumber(stop.position),
           };
         }),
       });
-    } else {
-      out.push({ type: fill.type });
+    } else if (fill.type) {
+      out.push({ type: String(fill.type) });
     }
   }
   return out;
 }
 
 function extractStrokes(node) {
-  if (!node.strokes || !Array.isArray(node.strokes) || node.strokes.length === 0) {
+  if (
+    isMixed(node.strokes) ||
+    !node.strokes ||
+    !Array.isArray(node.strokes) ||
+    node.strokes.length === 0
+  ) {
     return undefined;
   }
   var strokes = [];
@@ -75,28 +108,35 @@ function extractStrokes(node) {
 }
 
 function extractLayout(node) {
-  if (!node.layoutMode || node.layoutMode === 'NONE') return undefined;
+  if (!node.layoutMode || node.layoutMode === 'NONE' || isMixed(node.layoutMode)) {
+    return undefined;
+  }
   return {
-    mode: node.layoutMode,
-    gap: node.itemSpacing,
+    mode: String(node.layoutMode),
+    gap: safeNumber(node.itemSpacing),
     padding: {
-      top: node.paddingTop || 0,
-      right: node.paddingRight || 0,
-      bottom: node.paddingBottom || 0,
-      left: node.paddingLeft || 0,
+      top: safeNumber(node.paddingTop) || 0,
+      right: safeNumber(node.paddingRight) || 0,
+      bottom: safeNumber(node.paddingBottom) || 0,
+      left: safeNumber(node.paddingLeft) || 0,
     },
-    align: node.counterAxisAlignItems,
-    justify: node.primaryAxisAlignItems,
+    align: isMixed(node.counterAxisAlignItems)
+      ? undefined
+      : safeString(node.counterAxisAlignItems) || node.counterAxisAlignItems,
+    justify: isMixed(node.primaryAxisAlignItems)
+      ? undefined
+      : safeString(node.primaryAxisAlignItems) || node.primaryAxisAlignItems,
   };
 }
 
 function extractText(node) {
   if (node.type !== 'TEXT') return undefined;
   var color;
-  if (node.fills && node.fills.length) {
-    for (var i = 0; i < node.fills.length; i++) {
-      if (node.fills[i].visible === false) continue;
-      var c = solidColor(node.fills[i]);
+  var fills = node.fills;
+  if (!isMixed(fills) && fills && fills.length) {
+    for (var i = 0; i < fills.length; i++) {
+      if (fills[i].visible === false) continue;
+      var c = solidColor(fills[i]);
       if (c) {
         color = c.color;
         break;
@@ -104,15 +144,32 @@ function extractText(node) {
     }
   }
   var fontFamily;
-  if (node.fontName && typeof node.fontName === 'object') {
-    fontFamily = node.fontName.family;
+  var fontName = node.fontName;
+  if (!isMixed(fontName) && fontName && typeof fontName === 'object') {
+    fontFamily = safeString(fontName.family);
   }
+  var lineHeight;
+  var lh = node.lineHeight;
+  if (!isMixed(lh)) {
+    if (typeof lh === 'number') lineHeight = lh;
+    else if (lh && typeof lh === 'object') {
+      lineHeight = {
+        unit: safeString(lh.unit),
+        value: safeNumber(lh.value),
+      };
+    }
+  }
+  var fontWeight = node.fontWeight;
+  if (isMixed(fontWeight)) fontWeight = undefined;
+
   return {
-    characters: node.characters || '',
-    fontSize: typeof node.fontSize === 'number' ? node.fontSize : undefined,
+    characters: safeString(node.characters) || '',
+    fontSize: safeNumber(node.fontSize),
     fontFamily: fontFamily,
-    fontWeight: node.fontWeight,
-    lineHeight: node.lineHeight,
+    fontWeight: typeof fontWeight === 'number' || typeof fontWeight === 'string'
+      ? fontWeight
+      : undefined,
+    lineHeight: lineHeight,
     color: color,
   };
 }
@@ -156,21 +213,21 @@ function normalizeNode(node, state) {
   var strokes = extractStrokes(node);
   if (strokes) data.strokes = strokes;
 
-  if (typeof node.cornerRadius === 'number') {
+  if (!isMixed(node.cornerRadius) && typeof node.cornerRadius === 'number') {
     data.cornerRadius = node.cornerRadius;
   } else if (
     typeof node.topLeftRadius === 'number' ||
     typeof node.topRightRadius === 'number'
   ) {
     data.cornerRadius = [
-      node.topLeftRadius || 0,
-      node.topRightRadius || 0,
-      node.bottomRightRadius || 0,
-      node.bottomLeftRadius || 0,
+      safeNumber(node.topLeftRadius) || 0,
+      safeNumber(node.topRightRadius) || 0,
+      safeNumber(node.bottomRightRadius) || 0,
+      safeNumber(node.bottomLeftRadius) || 0,
     ];
   }
 
-  if (typeof node.opacity === 'number' && node.opacity !== 1) {
+  if (!isMixed(node.opacity) && typeof node.opacity === 'number' && node.opacity !== 1) {
     data.opacity = node.opacity;
   }
 
@@ -308,7 +365,7 @@ function buildPayloadFromNode(root, meta) {
     // optional
   }
 
-  return payload;
+  return toJsonSafe(payload);
 }
 
 function publishSelectionPreview() {
