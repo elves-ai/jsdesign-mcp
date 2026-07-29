@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body { font-family: "PingFang SC", sans-serif; padding: 16px; color: #222; background: #f7f7f8; }
+    h1 { font-size: 16px; margin: 0 0 4px; }
+    .sub { font-size: 12px; color: #888; margin-bottom: 16px; }
+    label { font-size: 12px; color: #666; display: block; margin-bottom: 4px; }
+    input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 12px; box-sizing: border-box; }
+    button { width: 100%; padding: 12px; border: 0; border-radius: 8px; background: #2f6bff; color: #fff; font-size: 14px; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status { margin-top: 12px; padding: 10px; border-radius: 6px; font-size: 12px; display: none; white-space: pre-wrap; }
+    .status.show { display: block; }
+    .ok { background: #eefbf0; color: #1b7a2d; }
+    .err { background: #feeeee; color: #b42318; }
+    .info { background: #eef2ff; color: #2f4bbf; }
+  </style>
+</head>
+<body>
+  <h1>JsDesign → Cursor</h1>
+  <p class="sub">发送当前选中 Frame 到本地 MCP</p>
+  <label>MCP Server</label>
+  <input id="url" value="http://127.0.0.1:3847" />
+  <button id="send">发送选中到 Cursor</button>
+  <div id="status" class="status"></div>
+  <script>
+    var statusEl = document.getElementById('status');
+    var urlEl = document.getElementById('url');
+    var sendBtn = document.getElementById('send');
+
+    function show(type, text) {
+      statusEl.className = 'status show ' + type;
+      statusEl.textContent = text;
+    }
+
+    function serverBase() {
+      return (urlEl.value || '').replace(/\/$/, '');
+    }
+
+    sendBtn.onclick = function () {
+      show('info', '正在读取选中…');
+      parent.postMessage({ pluginMessage: { type: 'export-selection' } }, '*');
+    };
+
+    onmessage = function (event) {
+      var msg = event.data && event.data.pluginMessage;
+      if (!msg) return;
+      if (msg.type === 'error') {
+        show('err', msg.message || '未知错误');
+        return;
+      }
+      if (msg.type === 'selection-payload') {
+        show('info', '正在发送到 MCP…');
+        fetch(serverBase() + '/ingest', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(msg.data),
+        })
+          .then(function (res) {
+            return res.json().then(function (body) {
+              return { res: res, body: body };
+            });
+          })
+          .then(function (r) {
+            if (!r.res.ok) {
+              throw new Error((r.body && r.body.error) || ('HTTP ' + r.res.status));
+            }
+            show(
+              'ok',
+              '已发送：' +
+                (r.body.rootName || 'ok') +
+                (r.body.truncated ? '（已截断）' : '')
+            );
+          })
+          .catch(function (err) {
+            show(
+              'err',
+              '发送失败：' +
+                (err && err.message ? err.message : err) +
+                '\n请确认已启动 mcp-server（npm run start）'
+            );
+          });
+      }
+    };
+
+    fetch(serverBase() + '/health')
+      .then(function (r) { return r.json(); })
+      .then(function (b) {
+        show(
+          'info',
+          b.ok
+            ? 'MCP 已连接' + (b.hasData ? '（已有缓存数据）' : '')
+            : 'MCP 异常'
+        );
+      })
+      .catch(function () {
+        show('info', 'MCP 未启动（发送前请先 npm run start）');
+      });
+  </script>
+</body>
+</html>

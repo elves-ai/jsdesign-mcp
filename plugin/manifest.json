@@ -1,0 +1,7 @@
+{
+  "name": "JsDesign → Cursor MCP",
+  "id": "jsdesign-cursor-mcp",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html"
+}
