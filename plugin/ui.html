@@ -5,23 +5,24 @@
   <style>
     body {
       font-family: "PingFang SC", sans-serif;
-      padding: 16px;
+      padding: 12px;
       color: #222;
       background: #f7f7f8;
       margin: 0;
+      box-sizing: border-box;
     }
-    h1 { font-size: 16px; margin: 0 0 4px; }
-    .sub { font-size: 12px; color: #888; margin-bottom: 14px; }
+    h1 { font-size: 15px; margin: 0 0 4px; }
+    .sub { font-size: 11px; color: #888; margin-bottom: 10px; }
     .status-row {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 12px;
+      padding: 8px 10px;
       background: #fff;
       border: 1px solid #e6e6e6;
       border-radius: 8px;
-      margin-bottom: 12px;
-      font-size: 13px;
+      margin-bottom: 8px;
+      font-size: 12px;
     }
     .dot {
       width: 8px;
@@ -32,24 +33,59 @@
     }
     .dot.on { background: #22a06b; }
     .dot.off { background: #c4c4c4; }
-    .actions { display: flex; gap: 8px; }
+    .actions { display: flex; gap: 8px; margin-bottom: 10px; }
     button {
       flex: 1;
-      padding: 10px 12px;
+      padding: 8px 10px;
       border: 0;
       border-radius: 8px;
-      font-size: 13px;
+      font-size: 12px;
       cursor: pointer;
     }
     #connect { background: #2f6bff; color: #fff; }
-    #disconnect { background: #fff; color: #333; border: 1px solid #ddd; }
+    #disconnect, #copy, #refresh {
+      background: #fff;
+      color: #333;
+      border: 1px solid #ddd;
+    }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .hint { margin-top: 12px; font-size: 11px; color: #999; line-height: 1.5; }
+    .meta {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 6px;
+      word-break: break-all;
+    }
+    .json-wrap {
+      position: relative;
+      background: #1e1e1e;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #333;
+    }
+    pre {
+      margin: 0;
+      padding: 10px;
+      max-height: 340px;
+      overflow: auto;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #d4d4d4;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .empty { color: #999; }
+    .toast {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #2f6bff;
+      min-height: 16px;
+    }
   </style>
 </head>
 <body>
   <h1>JsDesign → Cursor</h1>
-  <p class="sub">连接本地 MCP 后，把设计链接发给 AI 即可</p>
+  <p class="sub">连接 MCP；画布选中图层时下方展示 JSON</p>
 
   <div class="status-row">
     <span id="dot" class="dot off"></span>
@@ -61,28 +97,67 @@
     <button id="disconnect" disabled>断开连接</button>
   </div>
 
-  <p class="hint">
-    默认 ws://127.0.0.1:3847/plugin<br />
-    复制含 linkelement 的链接给 Cursor，例如：<br />
-    …&amp;linkelement=82-2142
-  </p>
+  <div class="actions">
+    <button id="refresh">刷新选中</button>
+    <button id="copy" disabled>复制 JSON</button>
+  </div>
+
+  <div id="meta" class="meta">未选中元素</div>
+  <div class="json-wrap">
+    <pre id="jsonView" class="empty">在画布点击元素后显示 JSON…</pre>
+  </div>
+  <div id="toast" class="toast"></div>
 
   <script>
     var WS_URL = 'ws://127.0.0.1:3847/plugin';
     var ws = null;
-    var connected = false;
+    var latestJson = '';
 
     var dot = document.getElementById('dot');
     var statusText = document.getElementById('statusText');
     var connectBtn = document.getElementById('connect');
     var disconnectBtn = document.getElementById('disconnect');
+    var copyBtn = document.getElementById('copy');
+    var refreshBtn = document.getElementById('refresh');
+    var jsonView = document.getElementById('jsonView');
+    var metaEl = document.getElementById('meta');
+    var toastEl = document.getElementById('toast');
 
     function setStatus(on, text) {
-      connected = on;
       dot.className = 'dot ' + (on ? 'on' : 'off');
       statusText.textContent = text;
       connectBtn.disabled = on;
       disconnectBtn.disabled = !on;
+    }
+
+    function showToast(text) {
+      toastEl.textContent = text || '';
+      if (text) {
+        setTimeout(function () {
+          if (toastEl.textContent === text) toastEl.textContent = '';
+        }, 2000);
+      }
+    }
+
+    function renderPreview(msg) {
+      if (!msg.ok) {
+        latestJson = '';
+        copyBtn.disabled = true;
+        metaEl.textContent = msg.message || '未选中元素';
+        jsonView.className = 'empty';
+        jsonView.textContent = msg.message || '在画布点击元素后显示 JSON…';
+        return;
+      }
+      latestJson = JSON.stringify(msg.payload, null, 2);
+      copyBtn.disabled = false;
+      metaEl.textContent =
+        (msg.nodeType || '') +
+        ' · ' +
+        (msg.nodeName || '') +
+        ' · id=' +
+        (msg.nodeId || '');
+      jsonView.className = '';
+      jsonView.textContent = latestJson;
     }
 
     function connect() {
@@ -144,12 +219,48 @@
 
     connectBtn.onclick = connect;
     disconnectBtn.onclick = disconnect;
+    refreshBtn.onclick = function () {
+      parent.postMessage({ pluginMessage: { type: 'refresh-selection' } }, '*');
+    };
+    copyBtn.onclick = function () {
+      if (!latestJson) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(latestJson).then(
+          function () { showToast('已复制 JSON'); },
+          function () { fallbackCopy(); }
+        );
+      } else {
+        fallbackCopy();
+      }
+    };
+
+    function fallbackCopy() {
+      var ta = document.createElement('textarea');
+      ta.value = latestJson;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast('已复制 JSON');
+      } catch (e) {
+        showToast('复制失败，请手动选择');
+      }
+      document.body.removeChild(ta);
+    }
 
     onmessage = function (event) {
       var msg = event.data && event.data.pluginMessage;
-      if (!msg || msg.type !== 'fetch-node-result') return;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify(msg));
+      if (!msg) return;
+
+      if (msg.type === 'selection-preview') {
+        renderPreview(msg);
+        return;
+      }
+
+      if (msg.type === 'fetch-node-result') {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify(msg));
+      }
     };
   </script>
 </body>

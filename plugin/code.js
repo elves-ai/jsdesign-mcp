@@ -311,10 +311,68 @@ function buildPayloadFromNode(root, meta) {
   return payload;
 }
 
-jsDesign.showUI(__html__, { width: 360, height: 260 });
+function publishSelectionPreview() {
+  var selection = jsDesign.currentPage.selection;
+  if (!selection || selection.length === 0) {
+    jsDesign.ui.postMessage({
+      type: 'selection-preview',
+      ok: false,
+      message: '未选中元素。在画布点击图层后，这里会显示 JSON。',
+    });
+    return;
+  }
+
+  // Prefer FRAME in multi-select; otherwise first selected
+  var root = null;
+  for (var i = 0; i < selection.length; i++) {
+    if (selection[i].type === 'FRAME') {
+      root = selection[i];
+      break;
+    }
+  }
+  if (!root) root = selection[0];
+
+  try {
+    var payload = buildPayloadFromNode(root, {});
+    if (!payload) {
+      jsDesign.ui.postMessage({
+        type: 'selection-preview',
+        ok: false,
+        message: '无法导出当前选中节点',
+      });
+      return;
+    }
+    jsDesign.ui.postMessage({
+      type: 'selection-preview',
+      ok: true,
+      nodeId: String(root.id),
+      nodeName: root.name || '',
+      nodeType: root.type || '',
+      payload: payload,
+    });
+  } catch (err) {
+    jsDesign.ui.postMessage({
+      type: 'selection-preview',
+      ok: false,
+      message: (err && err.message) || String(err),
+    });
+  }
+}
+
+jsDesign.showUI(__html__, { width: 420, height: 560 });
+
+jsDesign.on('selectionchange', publishSelectionPreview);
+publishSelectionPreview();
 
 jsDesign.ui.onmessage = function (msg) {
-  if (!msg || msg.type !== 'fetch-node') return;
+  if (!msg) return;
+
+  if (msg.type === 'refresh-selection') {
+    publishSelectionPreview();
+    return;
+  }
+
+  if (msg.type !== 'fetch-node') return;
 
   var requestId = msg.requestId;
   var nodeId = msg.nodeId;
