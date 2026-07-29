@@ -18,7 +18,21 @@
 └─────────────────┘        └──────────────────┘         └────────┘
 ```
 
-## 1. Cursor MCP 配置
+## 1. 启动本地 bridge（插件「连接」依赖它）
+
+插件用 HTTP 连 `127.0.0.1:3847`（不用 WebSocket）。先保证 bridge 在跑：
+
+```bash
+cd ~/mywork/jsdesign-mcp/mcp-server
+npm run build
+npm run bridge
+```
+
+探活：`curl -s http://127.0.0.1:3847/health` 应返回 `"ok":true`。
+
+也可只开 Cursor 的 `jsdesign` MCP（会尝试自动拉起 bridge）；不可靠时请手动 `npm run bridge`。
+
+## 2. Cursor MCP 配置
 
 `~/.cursor/mcp.json`：
 
@@ -33,9 +47,9 @@
 }
 ```
 
-改代码后执行 `cd mcp-server && npm run build`，再在 Cursor MCP 面板重启 `jsdesign`。
+改代码后 `npm run build`，再在 Cursor MCP 面板重启 `jsdesign`。
 
-## 2. 导入即时设计插件（桌面端）
+## 3. 导入即时设计插件（桌面端）
 
 1. 安装 [桌面客户端](https://js.design/download)  
 2. **插件 → 开发者 → 导入插件**  
