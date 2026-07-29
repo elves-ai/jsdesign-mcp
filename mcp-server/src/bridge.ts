@@ -1,32 +1,29 @@
 import { randomUUID } from 'node:crypto';
-import type { WebSocket } from 'ws';
 import type { DesignPayload } from './types.js';
 import { isDesignPayload } from './types.js';
 
-type Pending = {
+type PendingFetch = {
   resolve: (payload: DesignPayload) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  nodeId: string;
+  meta: Record<string, unknown>;
 };
 
-export type BridgeClientMessage =
-  | { type: 'hello'; role: 'plugin' }
-  | {
-      type: 'fetch-node-result';
-      requestId: string;
-      ok: true;
-      payload: DesignPayload;
-    }
-  | {
-      type: 'fetch-node-result';
-      requestId: string;
-      ok: false;
-      error: string;
-    };
+type WaitingPoller = {
+  resolve: (job: { requestId: string; nodeId: string; meta: Record<string, unknown> } | null) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
 
+/**
+ * HTTP long-poll bridge between MCP and Instant Design plugin UI.
+ * (Plugin UI often blocks WebSocket; fetch/long-poll works.)
+ */
 export class PluginBridge {
-  private sockets = new Set<WebSocket>();
-  private pending = new Map<string, Pending>();
+  private sessions = new Set<string>();
+  private pending = new Map<string, PendingFetch>();
+  private queue: Array<{ requestId: string; nodeId: string; meta: Record<string, unknown> }> = [];
+  private waiters: WaitingPoller[] = [];
   private readonly timeoutMs: number;
 
   constructor(timeoutMs = 20000) {
@@ -34,30 +31,64 @@ export class PluginBridge {
   }
 
   get pluginConnected(): boolean {
-    return this.sockets.size > 0;
+    return this.sessions.size > 0;
   }
 
   get connectionCount(): number {
-    return this.sockets.size;
+    return this.sessions.size;
   }
 
-  addClient(ws: WebSocket): void {
-    this.sockets.add(ws);
-    ws.on('close', () => {
-      this.sockets.delete(ws);
-    });
-    ws.on('message', (data) => {
-      this.onMessage(String(data));
-    });
-    this.send(ws, {
-      type: 'welcome',
-      pluginConnected: true,
-      message: '已连接到 jsdesign-mcp',
+  connect(): { sessionId: string } {
+    const sessionId = randomUUID();
+    this.sessions.add(sessionId);
+    return { sessionId };
+  }
+
+  disconnect(sessionId?: string): void {
+    if (sessionId) this.sessions.delete(sessionId);
+    else this.sessions.clear();
+    // Wake waiters so clients can exit cleanly
+    for (const w of this.waiters) {
+      clearTimeout(w.timer);
+      w.resolve(null);
+    }
+    this.waiters = [];
+  }
+
+  touch(sessionId: string): boolean {
+    if (!this.sessions.has(sessionId)) return false;
+    return true;
+  }
+
+  /** Plugin long-poll: wait until a fetch job is available. */
+  waitForJob(
+    sessionId: string,
+    waitMs = 25000
+  ): Promise<{ requestId: string; nodeId: string; meta: Record<string, unknown> } | null> {
+    if (!this.sessions.has(sessionId)) {
+      return Promise.reject(new Error('session invalid; please reconnect'));
+    }
+
+    const job = this.queue.shift();
+    if (job) return Promise.resolve(job);
+
+    return new Promise((resolve) => {
+      const waiter: WaitingPoller = {
+        resolve,
+        timer: setTimeout(() => {
+          this.waiters = this.waiters.filter((w) => w !== waiter);
+          resolve(null);
+        }, waitMs),
+      };
+      this.waiters.push(waiter);
     });
   }
 
-  /** Ask connected plugin to export a node by id. */
-  fetchNode(nodeId: string, meta?: { fileKey?: string; pageId?: string; url?: string }): Promise<DesignPayload> {
+  /** MCP asks plugin to export a node. */
+  fetchNode(
+    nodeId: string,
+    meta?: { fileKey?: string; pageId?: string; url?: string }
+  ): Promise<DesignPayload> {
     if (!this.pluginConnected) {
       return Promise.reject(
         new Error(
@@ -67,6 +98,8 @@ export class PluginBridge {
     }
 
     const requestId = randomUUID();
+    const metaObj = (meta || {}) as Record<string, unknown>;
+
     return new Promise<DesignPayload>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
@@ -77,54 +110,45 @@ export class PluginBridge {
         );
       }, this.timeoutMs);
 
-      this.pending.set(requestId, { resolve, reject, timer });
-      this.broadcast({
-        type: 'fetch-node',
-        requestId,
+      this.pending.set(requestId, {
+        resolve,
+        reject,
+        timer,
         nodeId,
-        meta: meta || {},
+        meta: metaObj,
       });
+
+      const job = { requestId, nodeId, meta: metaObj };
+      const waiter = this.waiters.shift();
+      if (waiter) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(job);
+      } else {
+        this.queue.push(job);
+      }
     });
   }
 
-  private onMessage(raw: string): void {
-    let msg: BridgeClientMessage;
-    try {
-      msg = JSON.parse(raw) as BridgeClientMessage;
-    } catch {
-      return;
-    }
-
-    if (msg.type === 'hello') {
-      return;
-    }
-
-    if (msg.type !== 'fetch-node-result') return;
-
-    const pending = this.pending.get(msg.requestId);
-    if (!pending) return;
+  completeJob(
+    requestId: string,
+    result:
+      | { ok: true; payload: DesignPayload }
+      | { ok: false; error: string }
+  ): boolean {
+    const pending = this.pending.get(requestId);
+    if (!pending) return false;
     clearTimeout(pending.timer);
-    this.pending.delete(msg.requestId);
+    this.pending.delete(requestId);
 
-    if (!msg.ok) {
-      pending.reject(new Error(msg.error || '插件返回失败'));
-      return;
+    if (!result.ok) {
+      pending.reject(new Error(result.error || '插件返回失败'));
+      return true;
     }
-    if (!isDesignPayload(msg.payload)) {
+    if (!isDesignPayload(result.payload)) {
       pending.reject(new Error('插件返回的数据不是合法 DesignPayload'));
-      return;
+      return true;
     }
-    pending.resolve(msg.payload);
-  }
-
-  private broadcast(data: unknown): void {
-    const raw = JSON.stringify(data);
-    for (const ws of this.sockets) {
-      if (ws.readyState === ws.OPEN) ws.send(raw);
-    }
-  }
-
-  private send(ws: WebSocket, data: unknown): void {
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(data));
+    pending.resolve(result.payload);
+    return true;
   }
 }

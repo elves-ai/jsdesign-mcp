@@ -56,7 +56,6 @@
       word-break: break-all;
     }
     .json-wrap {
-      position: relative;
       background: #1e1e1e;
       border-radius: 8px;
       overflow: hidden;
@@ -65,7 +64,7 @@
     pre {
       margin: 0;
       padding: 10px;
-      max-height: 340px;
+      max-height: 320px;
       overflow: auto;
       font-size: 11px;
       line-height: 1.45;
@@ -85,7 +84,7 @@
 </head>
 <body>
   <h1>JsDesign → Cursor</h1>
-  <p class="sub">连接 MCP；画布选中图层时下方展示 JSON</p>
+  <p class="sub">连接本地 bridge；选中图层显示 JSON</p>
 
   <div class="status-row">
     <span id="dot" class="dot off"></span>
@@ -109,8 +108,9 @@
   <div id="toast" class="toast"></div>
 
   <script>
-    var WS_URL = 'ws://127.0.0.1:3847/plugin';
-    var ws = null;
+    var BASE = 'http://127.0.0.1:3847';
+    var sessionId = null;
+    var polling = false;
     var latestJson = '';
 
     var dot = document.getElementById('dot');
@@ -135,7 +135,7 @@
       if (text) {
         setTimeout(function () {
           if (toastEl.textContent === text) toastEl.textContent = '';
-        }, 2000);
+        }, 2500);
       }
     }
 
@@ -160,59 +160,81 @@
       jsonView.textContent = latestJson;
     }
 
-    function connect() {
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        return;
-      }
-      setStatus(false, '连接中…');
-      try {
-        ws = new WebSocket(WS_URL);
-      } catch (e) {
-        setStatus(false, '无法创建连接');
-        return;
-      }
-
-      ws.onopen = function () {
-        ws.send(JSON.stringify({ type: 'hello', role: 'plugin' }));
-        setStatus(true, '已连接');
-      };
-
-      ws.onclose = function () {
-        ws = null;
-        setStatus(false, '未连接');
-      };
-
-      ws.onerror = function () {
-        setStatus(false, '连接失败（请确认 Cursor MCP 已启动）');
-      };
-
-      ws.onmessage = function (event) {
-        var msg;
-        try {
-          msg = JSON.parse(event.data);
-        } catch (e) {
-          return;
-        }
-        if (msg.type === 'fetch-node') {
-          parent.postMessage(
-            {
-              pluginMessage: {
-                type: 'fetch-node',
-                requestId: msg.requestId,
-                nodeId: msg.nodeId,
-                meta: msg.meta || {},
+    function pollLoop() {
+      if (!polling || !sessionId) return;
+      fetch(BASE + '/plugin/wait?sessionId=' + encodeURIComponent(sessionId))
+        .then(function (res) {
+          if (res.status === 401) {
+            throw new Error('会话失效，请重新连接');
+          }
+          return res.json();
+        })
+        .then(function (body) {
+          if (!polling) return;
+          if (body && body.job) {
+            parent.postMessage(
+              {
+                pluginMessage: {
+                  type: 'fetch-node',
+                  requestId: body.job.requestId,
+                  nodeId: body.job.nodeId,
+                  meta: body.job.meta || {},
+                },
               },
-            },
-            '*'
+              '*'
+            );
+          }
+          pollLoop();
+        })
+        .catch(function (err) {
+          if (!polling) return;
+          setStatus(false, '连接中断：' + (err && err.message ? err.message : err));
+          polling = false;
+          sessionId = null;
+        });
+    }
+
+    function connect() {
+      setStatus(false, '连接中…');
+      fetch(BASE + '/health')
+        .then(function (res) {
+          if (!res.ok) throw new Error('health HTTP ' + res.status);
+          return res.json();
+        })
+        .then(function () {
+          return fetch(BASE + '/plugin/connect', { method: 'POST' });
+        })
+        .then(function (res) {
+          return res.json();
+        })
+        .then(function (body) {
+          if (!body || !body.ok || !body.sessionId) {
+            throw new Error((body && body.error) || 'connect failed');
+          }
+          sessionId = body.sessionId;
+          polling = true;
+          setStatus(true, '已连接');
+          pollLoop();
+        })
+        .catch(function (err) {
+          setStatus(
+            false,
+            '连接失败：本机 3847 无服务。请在终端执行：cd ~/mywork/jsdesign-mcp/mcp-server && npm run bridge'
           );
-        }
-      };
+          showToast(String(err && err.message ? err.message : err));
+        });
     }
 
     function disconnect() {
-      if (ws) {
-        ws.close();
-        ws = null;
+      polling = false;
+      var sid = sessionId;
+      sessionId = null;
+      if (sid) {
+        fetch(BASE + '/plugin/disconnect', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId: sid }),
+        }).catch(function () {});
       }
       setStatus(false, '未连接');
     }
@@ -243,7 +265,7 @@
         document.execCommand('copy');
         showToast('已复制 JSON');
       } catch (e) {
-        showToast('复制失败，请手动选择');
+        showToast('复制失败');
       }
       document.body.removeChild(ta);
     }
@@ -258,10 +280,23 @@
       }
 
       if (msg.type === 'fetch-node-result') {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify(msg));
+        fetch(BASE + '/plugin/result', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(msg),
+        }).catch(function () {});
       }
     };
+
+    // Probe on open
+    fetch(BASE + '/health')
+      .then(function (r) { return r.json(); })
+      .then(function (b) {
+        showToast(b.ok ? '检测到 bridge，可点击连接' : 'bridge 异常');
+      })
+      .catch(function () {
+        showToast('未检测到 bridge（需 npm run bridge 或 Cursor MCP）');
+      });
   </script>
 </body>
 </html>

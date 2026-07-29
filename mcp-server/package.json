@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "bridge": "node dist/bridge-main.js",
     "dev": "tsc && node dist/index.js",
+    "dev:bridge": "tsc && node dist/bridge-main.js",
     "test": "tsc && node --test dist/**/*.test.js"
   },
   "dependencies": {
