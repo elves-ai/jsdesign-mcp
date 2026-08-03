@@ -69,6 +69,8 @@ export function createRemoteToolContext(
   const store = {
     get: () => localStore.get(),
     set: (p: DesignPayload) => localStore.set(p),
+    getAssets: () => localStore.getAssets(),
+    getAssetsDir: () => localStore.getAssetsDir(),
   } as DesignStore;
 
   return { store, bridge };

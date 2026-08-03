@@ -3,26 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <style>
+    * { box-sizing: border-box; }
     body {
       font-family: "PingFang SC", sans-serif;
-      padding: 12px;
+      margin: 0;
+      padding: 0;
       color: #222;
       background: #f7f7f8;
-      margin: 0;
-      box-sizing: border-box;
+      overflow: hidden;
     }
-    h1 { font-size: 15px; margin: 0 0 4px; }
-    .sub { font-size: 11px; color: #888; margin-bottom: 10px; }
-    .status-row {
+
+    /* ── collapsed bar ── */
+    .bar {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 8px 10px;
+      height: 52px;
+      padding: 0 10px;
       background: #fff;
-      border: 1px solid #e6e6e6;
-      border-radius: 8px;
-      margin-bottom: 8px;
-      font-size: 12px;
+      border-bottom: 1px solid #eaeaea;
     }
     .dot {
       width: 8px;
@@ -33,8 +32,70 @@
     }
     .dot.on { background: #22a06b; }
     .dot.off { background: #c4c4c4; }
-    .actions { display: flex; gap: 8px; margin-bottom: 10px; }
-    button {
+    .status-text {
+      flex: 1;
+      min-width: 0;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .bar-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .bar-actions button {
+      padding: 5px 10px;
+      border: 0;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #connect { background: #2f6bff; color: #fff; }
+    #disconnect {
+      background: #fff;
+      color: #333;
+      border: 1px solid #ddd;
+    }
+    #toggle {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      background: #f0f0f2;
+      color: #555;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #toggle:hover { background: #e6e6ea; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* ── expanded panel ── */
+    .panel {
+      display: none;
+      padding: 10px 12px 12px;
+    }
+    body.expanded .panel { display: block; }
+    body.expanded .bar { border-bottom-color: #e6e6e6; }
+
+    .sub {
+      font-size: 11px;
+      color: #888;
+      margin: 0 0 10px;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .actions button {
       flex: 1;
       padding: 8px 10px;
       border: 0;
@@ -42,13 +103,11 @@
       font-size: 12px;
       cursor: pointer;
     }
-    #connect { background: #2f6bff; color: #fff; }
-    #disconnect, #copy, #refresh {
+    #refresh, #copy {
       background: #fff;
       color: #333;
       border: 1px solid #ddd;
     }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
     .meta {
       font-size: 11px;
       color: #666;
@@ -83,49 +142,64 @@
   </style>
 </head>
 <body>
-  <h1>JsDesign → Cursor</h1>
-  <p class="sub">连接本地 bridge；选中图层显示 JSON</p>
-
-  <div class="status-row">
+  <div class="bar">
     <span id="dot" class="dot off"></span>
-    <span id="statusText">未连接</span>
+    <span id="statusText" class="status-text">未连接</span>
+    <div class="bar-actions">
+      <button id="connect">连接</button>
+      <button id="disconnect" disabled>断开</button>
+      <button id="toggle" title="展开/折叠" aria-label="展开/折叠">▾</button>
+    </div>
   </div>
 
-  <div class="actions">
-    <button id="connect">连接</button>
-    <button id="disconnect" disabled>断开连接</button>
-  </div>
+  <div class="panel">
+    <p class="sub">连接本地 bridge；选中图层显示 JSON</p>
 
-  <div class="actions">
-    <button id="refresh">刷新选中</button>
-    <button id="copy" disabled>复制 JSON</button>
-  </div>
+    <div class="actions">
+      <button id="refresh">刷新选中</button>
+      <button id="copy" disabled>复制 JSON</button>
+    </div>
 
-  <div id="meta" class="meta">未选中元素</div>
-  <div class="json-wrap">
-    <pre id="jsonView" class="empty">在画布点击元素后显示 JSON…</pre>
+    <div id="meta" class="meta">未选中元素</div>
+    <div class="json-wrap">
+      <pre id="jsonView" class="empty">在画布点击元素后显示 JSON…</pre>
+    </div>
+    <div id="toast" class="toast"></div>
   </div>
-  <div id="toast" class="toast"></div>
 
   <script>
     var BASE = 'http://127.0.0.1:3847';
     var sessionId = null;
     var polling = false;
     var latestJson = '';
+    var expanded = false;
 
     var dot = document.getElementById('dot');
     var statusText = document.getElementById('statusText');
     var connectBtn = document.getElementById('connect');
     var disconnectBtn = document.getElementById('disconnect');
+    var toggleBtn = document.getElementById('toggle');
     var copyBtn = document.getElementById('copy');
     var refreshBtn = document.getElementById('refresh');
     var jsonView = document.getElementById('jsonView');
     var metaEl = document.getElementById('meta');
     var toastEl = document.getElementById('toast');
 
+    function setExpanded(next) {
+      expanded = !!next;
+      document.body.className = expanded ? 'expanded' : '';
+      toggleBtn.textContent = expanded ? '▴' : '▾';
+      toggleBtn.title = expanded ? '折叠' : '展开';
+      parent.postMessage(
+        { pluginMessage: { type: 'resize-ui', expanded: expanded } },
+        '*'
+      );
+    }
+
     function setStatus(on, text) {
       dot.className = 'dot ' + (on ? 'on' : 'off');
       statusText.textContent = text;
+      statusText.title = text;
       connectBtn.disabled = on;
       disconnectBtn.disabled = !on;
     }
@@ -217,11 +291,9 @@
           pollLoop();
         })
         .catch(function (err) {
-          setStatus(
-            false,
-            '连接失败：本机 3847 无服务。请在终端执行：cd ~/mywork/jsdesign-mcp/mcp-server && npm run bridge'
-          );
+          setStatus(false, '连接失败：本机 3847 无服务');
           showToast(String(err && err.message ? err.message : err));
+          if (!expanded) setExpanded(true);
         });
     }
 
@@ -239,6 +311,9 @@
       setStatus(false, '未连接');
     }
 
+    toggleBtn.onclick = function () {
+      setExpanded(!expanded);
+    };
     connectBtn.onclick = connect;
     disconnectBtn.onclick = disconnect;
     refreshBtn.onclick = function () {
@@ -288,7 +363,7 @@
       }
     };
 
-    // Probe on open
+    // Probe on open — toast only visible when expanded
     fetch(BASE + '/health')
       .then(function (r) { return r.json(); })
       .then(function (b) {

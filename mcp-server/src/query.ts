@@ -12,6 +12,8 @@ export type Overview = {
   meta: DesignPayload['meta'];
   tokens: DesignTokens;
   root: NodeSummary;
+  /** 本次落盘切图数量；完整清单用 list_assets */
+  assetCount?: number;
 };
 
 function summarize(node: DesignNode, depth = 0, maxDepth = 3): NodeSummary {
@@ -30,10 +32,14 @@ function summarize(node: DesignNode, depth = 0, maxDepth = 3): NodeSummary {
 }
 
 export function buildOverview(payload: DesignPayload): Overview {
+  const { assets: _assets, ...metaRest } = payload.meta;
   return {
-    meta: payload.meta,
+    meta: metaRest,
     tokens: payload.tokens,
     root: summarize(payload.root),
+    assetCount: Array.isArray(payload.meta.assets)
+      ? payload.meta.assets.length
+      : 0,
   };
 }
 

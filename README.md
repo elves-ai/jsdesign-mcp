@@ -56,14 +56,26 @@ npm run bridge
 3. 选择 `plugin/manifest.json`  
 4. 运行插件 → 点 **连接**（状态点变绿）
 
-## 3. MCP 工具
+## 4. MCP 工具
 
 | Tool | 说明 |
 |------|------|
-| `get_node_by_url` | **主工具**：解析链接/`linkelement`，向已连接插件拉节点 |
+| `get_node_by_url` | **主工具**：解析链接/`linkelement`，向已连接插件拉节点（含自动切图） |
+| `list_assets` | 列出本次落盘的图片/切图（本机绝对路径） |
 | `get_plugin_status` | 插件是否已连接 |
 | `get_selection_overview` | 最近一次拉取的概览 |
 | `get_node` / `list_nodes` / `get_design_tokens` | 基于最近一次缓存查询 |
+
+### 自动切图
+
+`get_node_by_url` 时插件会导出：
+
+1. **IMAGE 填充** → 节点 `image`（真实图片字节）
+2. **图标类切图**（`icon_slice`，或小尺寸且含矢量的 `exportSettings`）→ 节点 `slice`（**优先 SVG**，失败回退 PNG），并附 `svg` 源码
+3. **其它 exportSettings 图层** → 节点 `slice`（PNG）
+4. **根节点 preview** → `root.preview`（PNG）
+
+MCP 收到后写入 `~/.jsdesign-mcp/assets/`（`.svg` / `.png`），节点上只保留 `path`（去掉 base64）。用 `list_assets` 查看清单。
 
 ## 开发
 

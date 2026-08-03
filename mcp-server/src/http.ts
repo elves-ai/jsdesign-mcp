@@ -7,7 +7,8 @@ import { isDesignPayload } from './types.js';
 export function createHttpApp(store: DesignStore, bridge: PluginBridge) {
   const app = express();
   app.use(cors());
-  app.use(express.json({ limit: '20mb' }));
+  // 插件回传切图 base64 可能较大，落盘前需足够 body 上限
+  app.use(express.json({ limit: '50mb' }));
 
   app.get('/health', (_req, res) => {
     const data = store.get();

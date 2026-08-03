@@ -26,7 +26,7 @@ export class PluginBridge {
   private waiters: WaitingPoller[] = [];
   private readonly timeoutMs: number;
 
-  constructor(timeoutMs = 20000) {
+  constructor(timeoutMs = 60000) {
     this.timeoutMs = timeoutMs;
   }
 

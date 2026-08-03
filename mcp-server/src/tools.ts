@@ -74,6 +74,12 @@ export const toolDefinitions: ToolDefinition[] = [
     description: '扁平列出最近一次拉取数据中的节点 id/name/type。',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'list_assets',
+    description:
+      '列出最近一次拉取时自动切图落盘的资源（本机绝对路径）。含 IMAGE 填充、exportSettings 图层、图标类容器（优先 SVG）、以及根节点 preview。',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
 ];
 
 function needCache(payload: DesignPayload | null) {
@@ -125,12 +131,18 @@ export async function handleToolCall(
           fileName: result.meta.fileName || parsed.fileKey,
         };
         ctx.store.set(result);
+        const stored = ctx.store.get()!;
         return textResult(
           JSON.stringify(
             {
               link: parsed,
-              overview: buildOverview(result),
-              root: result.root,
+              overview: buildOverview(stored),
+              assets: {
+                dir: ctx.store.getAssetsDir(),
+                count: ctx.store.getAssets().length,
+                items: ctx.store.getAssets(),
+              },
+              root: stored.root,
             },
             null,
             2
@@ -158,6 +170,22 @@ export async function handleToolCall(
       const miss = needCache(payload);
       if (miss) return miss;
       return textResult(JSON.stringify(listNodes(payload!), null, 2));
+    }
+
+    case 'list_assets': {
+      const miss = needCache(payload);
+      if (miss) return miss;
+      return textResult(
+        JSON.stringify(
+          {
+            assetsDir: ctx.store.getAssetsDir(),
+            count: ctx.store.getAssets().length,
+            assets: ctx.store.getAssets(),
+          },
+          null,
+          2
+        )
+      );
     }
 
     case 'get_node': {

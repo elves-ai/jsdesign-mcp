@@ -53,6 +53,7 @@ describe('MCP tools', () => {
   it('lists primary url tool', () => {
     assert.ok(toolDefinitions.some((t) => t.name === 'get_node_by_url'));
     assert.ok(toolDefinitions.some((t) => t.name === 'get_plugin_status'));
+    assert.ok(toolDefinitions.some((t) => t.name === 'list_assets'));
   });
 
   it('prompts when no cached data', async () => {
@@ -102,5 +103,13 @@ describe('MCP tools', () => {
       { store, bridge }
     );
     assert.match(result.content[0].text, /无法解析/);
+  });
+
+  it('list_assets returns empty after cache without binaries', async () => {
+    store.set(payload);
+    const result = await handleToolCall('list_assets', {}, { store, bridge });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.equal(parsed.count, 0);
+    assert.ok(parsed.assetsDir.includes('jsdesign-tools-') || parsed.assetsDir);
   });
 });

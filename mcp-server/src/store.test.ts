@@ -46,11 +46,15 @@ describe('DesignStore', () => {
   it('stores payload in memory and disk', () => {
     const payload = samplePayload();
     store.set(payload);
-    assert.deepEqual(store.get(), payload);
+    const got = store.get();
+    assert.ok(got);
+    assert.equal(got!.root.name, 'Frame');
+    assert.ok(Array.isArray(got!.meta.assets));
+    assert.equal(got!.meta.assetsDir, path.join(tmpDir, 'assets'));
     const onDisk = JSON.parse(
       fs.readFileSync(path.join(tmpDir, 'latest.json'), 'utf8')
     );
-    assert.deepEqual(onDisk, payload);
+    assert.equal(onDisk.root.name, 'Frame');
   });
 
   it('loads from disk on construct', () => {
