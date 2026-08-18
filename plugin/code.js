@@ -363,24 +363,38 @@ function extractLetterSpacing(ls) {
   return undefined;
 }
 
+/** 安全读取节点属性：js.design 部分 TEXT getter 在字体未就绪时会抛错 */
+function safeProp(node, key) {
+  try {
+    return node[key];
+  } catch (_e) {
+    return undefined;
+  }
+}
+
 function extractText(node) {
   if (node.type !== 'TEXT') return undefined;
   var color;
   var colorOpacity;
-  var solid = firstSolidFromFills(resolveTextFills(node));
-  if (solid) {
-    color = solid.color;
-    if (solid.opacity !== undefined && solid.opacity !== 1) colorOpacity = solid.opacity;
+  try {
+    var solid = firstSolidFromFills(resolveTextFills(node));
+    if (solid) {
+      color = solid.color;
+      if (solid.opacity !== undefined && solid.opacity !== 1) colorOpacity = solid.opacity;
+    }
+  } catch (_eFill) {
+    /* ignore fills */
   }
   var fontFamily;
   var fontStyle;
-  var fontName = node.fontName;
+  // js.design 偶发 fontName/fontSize getter 抛错（get_fontName / get_fontSize）
+  var fontName = safeProp(node, 'fontName');
   if (!isMixed(fontName) && fontName && typeof fontName === 'object') {
     fontFamily = safeString(fontName.family);
     fontStyle = safeString(fontName.style);
   }
   var lineHeight;
-  var lh = node.lineHeight;
+  var lh = safeProp(node, 'lineHeight');
   if (!isMixed(lh)) {
     if (typeof lh === 'number') lineHeight = lh;
     else if (lh && typeof lh === 'object') {
@@ -390,12 +404,12 @@ function extractText(node) {
       };
     }
   }
-  var fontWeight = node.fontWeight;
+  var fontWeight = safeProp(node, 'fontWeight');
   if (isMixed(fontWeight)) fontWeight = undefined;
 
   var text = {
-    characters: safeString(node.characters) || '',
-    fontSize: safeNumber(node.fontSize),
+    characters: safeString(safeProp(node, 'characters')) || '',
+    fontSize: safeNumber(safeProp(node, 'fontSize')),
     fontFamily: fontFamily,
     fontStyle: fontStyle,
     fontWeight:
@@ -403,22 +417,20 @@ function extractText(node) {
         ? fontWeight
         : undefined,
     lineHeight: lineHeight,
-    letterSpacing: extractLetterSpacing(node.letterSpacing),
+    letterSpacing: extractLetterSpacing(safeProp(node, 'letterSpacing')),
     color: color,
-    textAlignHorizontal: safeString(node.textAlignHorizontal),
-    textAlignVertical: safeString(node.textAlignVertical),
-    textAutoResize: safeString(node.textAutoResize),
+    textAlignHorizontal: safeString(safeProp(node, 'textAlignHorizontal')),
+    textAlignVertical: safeString(safeProp(node, 'textAlignVertical')),
+    textAutoResize: safeString(safeProp(node, 'textAutoResize')),
   };
   if (colorOpacity !== undefined) text.colorOpacity = colorOpacity;
-  if (!isMixed(node.textCase) && node.textCase && node.textCase !== 'ORIGINAL') {
-    text.textCase = String(node.textCase);
+  var textCase = safeProp(node, 'textCase');
+  if (!isMixed(textCase) && textCase && textCase !== 'ORIGINAL') {
+    text.textCase = String(textCase);
   }
-  if (
-    !isMixed(node.textDecoration) &&
-    node.textDecoration &&
-    node.textDecoration !== 'NONE'
-  ) {
-    text.textDecoration = String(node.textDecoration);
+  var textDecoration = safeProp(node, 'textDecoration');
+  if (!isMixed(textDecoration) && textDecoration && textDecoration !== 'NONE') {
+    text.textDecoration = String(textDecoration);
   }
   // 即时设计宿主暂不支持 paragraphIndent / paragraphSpacing，访问会弹「暂不支持属性」
   return text;
