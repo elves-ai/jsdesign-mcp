@@ -370,7 +370,7 @@
         showToast(b.ok ? '检测到 bridge，可点击连接' : 'bridge 异常');
       })
       .catch(function () {
-        showToast('未检测到 bridge（需 npm run bridge 或 Cursor MCP）');
+        showToast('未检测到 bridge（需先 npm run bridge / npm start）');
       });
   </script>
 </body>

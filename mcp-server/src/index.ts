@@ -1,6 +1,3 @@
-import { spawn } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -17,34 +14,15 @@ import {
 } from './remote.js';
 
 const port = Number(process.env.JSDESIGN_MCP_PORT || DEFAULT_HTTP_PORT);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const store = new DesignStore();
 
-async function ensureBridge(): Promise<void> {
+async function logBridgeStatus(): Promise<void> {
   if (await isBridgeUp(port)) {
-    console.error(
-      `[jsdesign-mcp] using existing bridge http://127.0.0.1:${port}`
-    );
+    console.error(`[jsdesign-mcp] using bridge http://127.0.0.1:${port}`);
     return;
   }
-
-  const bridgeMain = path.join(__dirname, 'bridge-main.js');
-  spawn(process.execPath, [bridgeMain], {
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, JSDESIGN_MCP_PORT: String(port) },
-  }).unref();
-
-  for (let i = 0; i < 25; i++) {
-    await new Promise((r) => setTimeout(r, 120));
-    if (await isBridgeUp(port)) {
-      console.error('[jsdesign-mcp] spawned standalone bridge');
-      return;
-    }
-  }
-
   console.error(
-    '[jsdesign-mcp] WARNING: bridge not up; run: npm run bridge'
+    '[jsdesign-mcp] WARNING: bridge not up; run: npm start 或 npm run bridge'
   );
 }
 
@@ -140,5 +118,5 @@ async function startMcp(): Promise<void> {
   console.error('[jsdesign-mcp] MCP stdio connected (HTTP client → bridge)');
 }
 
-await ensureBridge();
+await logBridgeStatus();
 await startMcp();
