@@ -5,12 +5,11 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
+    "prepare": "tsc",
     "build": "tsc",
-    "start": "node dist/bridge-main.js",
+    "start": "tsx watch src/bridge-main.ts",
     "bridge": "node dist/bridge-main.js",
     "mcp": "node dist/index.js",
-    "dev": "tsc && node dist/index.js",
-    "dev:bridge": "tsc && node dist/bridge-main.js",
     "test": "tsc && node --test dist/**/*.test.js"
   },
   "dependencies": {
@@ -24,6 +23,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.0"
   }
 }

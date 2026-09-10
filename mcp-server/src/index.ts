@@ -44,7 +44,7 @@ async function ensureBridge(): Promise<void> {
   }
 
   console.error(
-    '[jsdesign-mcp] WARNING: bridge not up; run: npm start'
+    '[jsdesign-mcp] WARNING: bridge not up; run: npm run bridge'
   );
 }
 
@@ -106,7 +106,7 @@ async function startMcp(): Promise<void> {
               text: JSON.stringify(
                 {
                   pluginConnected: false,
-                  error: 'bridge unreachable; run npm start',
+                  error: 'bridge unreachable; run npm run bridge',
                   bridge: `http://127.0.0.1:${port}`,
                 },
                 null,
