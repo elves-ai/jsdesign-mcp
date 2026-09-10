@@ -6,24 +6,26 @@
 
 ## 工作方式
 
-插件 UI 环境里 WebSocket 常被拦，因此插件与 MCP 之间用 **HTTP 长轮询**，不是 WebSocket。
+插件 UI 环境里 WebSocket 常被拦，因此插件与 **独立 HTTP bridge** 用长轮询通信。Cursor 的 MCP 只走 stdio，**不监听端口**，需要数据时再 HTTP 去 bridge 取。
 
 ```
-即时设计桌面端插件               本机 HTTP bridge (:3847)              Cursor
-┌──────────────────────┐  HTTP   ┌─────────────────────────┐  stdio  ┌────────┐
-│ 连接 / 断开           │────────►│ POST /plugin/connect    │◄───────►│ Agent  │
-│ 长轮询等 fetch 任务   │◄────────│ GET  /plugin/wait       │         │ 贴链接 │
-│ getNodeById + 规范化  │────────►│ POST /plugin/result     │         │        │
-│ 选中图层 JSON 预览    │        │ GET  /health            │         │        │
-└──────────────────────┘        │ get_node_by_url         │         └────────┘
+即时设计桌面端插件               本机 HTTP bridge (:3847)              Cursor MCP
+┌──────────────────────┐  HTTP   ┌─────────────────────────┐  HTTP   ┌────────┐
+│ 连接 / 断开           │────────►│ POST /plugin/connect    │◄────────│ stdio  │
+│ 长轮询等 fetch 任务   │◄────────│ GET  /plugin/wait       │         │ Agent  │
+│ getNodeById + 规范化  │────────►│ POST /plugin/result     │         │ 贴链接 │
+│ 选中图层 JSON 预览    │        │ POST /internal/fetch-node│         └────────┘
+└──────────────────────┘        │ GET  /health            │
                                  └─────────────────────────┘
 ```
 
-1. Cursor 启动 `jsdesign` MCP（会尽量自动拉起 bridge）
-2. 即时设计桌面端打开本插件 → 点 **连接**（状态点变绿）
+1. 独立进程 `npm start`（或 Cursor 首次打开 MCP 时自动拉起）监听 `:3847`
+2. 即时设计桌面端打开本插件 → 点 **连接**（连的是 bridge，不是 MCP）
 3. 复制带 `linkelement` 的链接发给 AI，例如：  
    `https://js.design/f/tFH0Pj?p=jku4Hd4Ps7&mode=design&linkelement=82-2142`
-4. AI 调用 `get_node_by_url` → MCP 经长轮询让插件 `getNodeById('82:2142')` → 返回结构 / 样式 / tokens / 切图路径
+4. AI 调用 `get_node_by_url` → MCP 向 bridge 要节点 → bridge 经长轮询让插件 `getNodeById` → 回传结构 / 样式 / tokens / 切图路径
+
+关 Cursor 时 MCP 随 stdio 退出。bridge 在插件已断开且约 5 分钟无访问后自行退出（`JSDESIGN_MCP_BRIDGE_IDLE_MS=0` 可关掉空闲退出）。
 
 也可直接传节点 id：`82:2142` 或 `82-2142`。链接里的 `node-id` / `nodeId` 同样可解析。
 
@@ -32,15 +34,15 @@
 | 路径 | 职责 |
 |------|------|
 | `plugin/` | 即时设计本地插件：连接 bridge、按 id 导出节点、选中预览 |
-| `mcp-server/` | Node MCP（stdio）+ HTTP bridge（仅绑定 `127.0.0.1`） |
+| `mcp-server/` | MCP stdio 客户端 + 独立 HTTP bridge（仅绑定 `127.0.0.1`） |
 | `docs/` | 早期设计稿与实现计划（部分描述已过时，以本 README 与源码为准） |
 
 `mcp-server/src` 主要模块：
 
 | 文件 | 职责 |
 |------|------|
-| `index.ts` | MCP stdio 入口；探测 / 内嵌 / 拉起独立 bridge |
-| `bridge-main.ts` | 独立 bridge 进程（`npm run bridge`） |
+| `index.ts` | MCP stdio 入口；只探测 / 拉起独立 bridge，再 HTTP 取数 |
+| `bridge-main.ts` | 独立 bridge 进程（`npm start`） |
 | `server.ts` / `http.ts` | Express：`/health`、插件长轮询、内部 fetch |
 | `bridge.ts` | 会话、任务队列、60s 拉取超时 |
 | `tools.ts` | 7 个 MCP 工具 |
@@ -52,24 +54,23 @@
 
 ## 1. 启动本地 bridge
 
-插件用 HTTP 连 `127.0.0.1:3847`。先保证 bridge 在跑：
+插件和 MCP 都连 `127.0.0.1:3847`，但只有 **bridge 进程**听这个端口。MCP 不会在自己进程里起 HTTP。
 
 ```bash
-cd ~/mywork/jsdesign-mcp/mcp-server
-npm install --registry https://registry.npmjs.org/
+cd ~/mywork/jsdesign-mcp
+npm --prefix mcp-server install --registry https://registry.npmjs.org/
 npm run build
-npm run bridge
+npm start
 ```
 
-探活：`curl -s http://127.0.0.1:3847/health` 应返回 `"ok":true`。已连接插件时还会有 `"pluginConnected":true`。
+探活：`curl -s http://127.0.0.1:3847/health` 应返回 `"ok":true,"role":"bridge"`。已连接插件时还会有 `"pluginConnected":true`。
 
-Cursor 打开 `jsdesign` MCP 时会按顺序尝试：
+Cursor 打开 `jsdesign` MCP 时：
 
 1. 复用已在跑的 `:3847`
-2. 在 MCP 进程内嵌启动 bridge
-3. 拉起独立 `bridge-main` 进程
+2. 否则拉起独立 `bridge-main` 进程，自己只当 HTTP 客户端
 
-不可靠时请手动 `npm run bridge`。端口可用环境变量覆盖：`JSDESIGN_MCP_PORT=3847`。
+不可靠时请手动 `npm start`。端口：`JSDESIGN_MCP_PORT=3847`。空闲退出：`JSDESIGN_MCP_BRIDGE_IDLE_MS`（默认 `300000`，`0` 为不退出）。
 
 ## 2. Cursor MCP 配置
 
@@ -161,8 +162,9 @@ npm run build
 | 命令 | 作用 |
 |------|------|
 | `npm run build` | `tsc` 输出到 `dist/` |
-| `npm start` | 跑 MCP stdio（通常由 Cursor 拉起） |
-| `npm run bridge` | 只跑 HTTP bridge，不占 stdio |
+| `npm start` | 启动 HTTP bridge（插件连接的本地服务） |
+| `npm run mcp` | 跑 MCP stdio（通常由 Cursor 拉起） |
+| `npm run bridge` | 同 `npm start` |
 | `npm test` | 编译后跑 Node 内置 test runner |
 | `npm run dev` / `dev:bridge` | 先编译再启动 |
 
@@ -172,7 +174,8 @@ npm run build
 
 | 现象 | 处理 |
 |------|------|
-| 插件「连接失败：本机 3847 无服务」 | 先 `npm run bridge`，或确认 Cursor MCP `jsdesign` 已连接 |
+| 插件「连接失败：本机 3847 无服务」 | 先 `npm start`，或打开 Cursor 让 MCP 拉起 bridge |
+| `lsof -iTCP:3847` 看到 `index.js` 而不是 `bridge-main.js` | 旧版把 HTTP 嵌在 MCP 里了，杀掉该进程后 `npm start` |
 | `get_node_by_url` 提示未连接 | 插件点「连接」，保持窗口打开 |
 | 拉取超时（60s） | 确认插件仍连接、当前文件里有该节点 |
 | 无法解析链接 | 必须带 `linkelement`（或 `node-id` / `nodeId`），或直接传 `82:2142` |

@@ -9,12 +9,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { DesignStore } from './store.js';
 import { handleToolCall, toolDefinitions } from './tools.js';
-import { PluginBridge } from './bridge.js';
-import {
-  startBridgeServer,
-  isBridgeUp,
-  DEFAULT_HTTP_PORT,
-} from './server.js';
+import { isBridgeUp, DEFAULT_HTTP_PORT } from './server.js';
 import {
   createRemoteToolContext,
   fetchHealth,
@@ -23,28 +18,14 @@ import {
 
 const port = Number(process.env.JSDESIGN_MCP_PORT || DEFAULT_HTTP_PORT);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const store = new DesignStore();
-const bridge = new PluginBridge();
-let useRemoteBridge = false;
 
 async function ensureBridge(): Promise<void> {
   if (await isBridgeUp(port)) {
-    useRemoteBridge = true;
     console.error(
       `[jsdesign-mcp] using existing bridge http://127.0.0.1:${port}`
     );
     return;
-  }
-
-  try {
-    await startBridgeServer(port, store, bridge);
-    useRemoteBridge = false;
-    console.error('[jsdesign-mcp] embedded bridge started');
-    return;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('[jsdesign-mcp] embed bridge failed:', message);
   }
 
   const bridgeMain = path.join(__dirname, 'bridge-main.js');
@@ -57,16 +38,23 @@ async function ensureBridge(): Promise<void> {
   for (let i = 0; i < 25; i++) {
     await new Promise((r) => setTimeout(r, 120));
     if (await isBridgeUp(port)) {
-      useRemoteBridge = true;
-      console.error('[jsdesign-mcp] spawned detached bridge');
+      console.error('[jsdesign-mcp] spawned standalone bridge');
       return;
     }
   }
 
-  useRemoteBridge = true;
   console.error(
-    '[jsdesign-mcp] WARNING: bridge not up; run: npm run bridge'
+    '[jsdesign-mcp] WARNING: bridge not up; run: npm start'
   );
+}
+
+function startBridgeHeartbeat(): void {
+  const tick = () => {
+    fetchHealth(port).catch(() => {});
+  };
+  tick();
+  const timer = setInterval(tick, 20_000);
+  timer.unref();
 }
 
 async function startMcp(): Promise<void> {
@@ -83,11 +71,6 @@ async function startMcp(): Promise<void> {
     const name = request.params.name;
     const args = (request.params.arguments || {}) as Record<string, unknown>;
 
-    if (!useRemoteBridge) {
-      return handleToolCall(name, args, { store, bridge });
-    }
-
-    // Sync cache from bridge process before read tools
     if (name !== 'get_node_by_url' && name !== 'get_plugin_status') {
       const latest = await fetchLatest(port);
       if (latest) store.set(latest);
@@ -123,7 +106,7 @@ async function startMcp(): Promise<void> {
               text: JSON.stringify(
                 {
                   pluginConnected: false,
-                  error: 'bridge unreachable; run npm run bridge',
+                  error: 'bridge unreachable; run npm start',
                   bridge: `http://127.0.0.1:${port}`,
                 },
                 null,
@@ -136,7 +119,6 @@ async function startMcp(): Promise<void> {
     }
 
     const ctx = createRemoteToolContext(port, store);
-    // Reflect live connection for get_node_by_url error messages
     try {
       const health = await fetchHealth(port);
       Object.defineProperty(ctx.bridge, 'pluginConnected', {
@@ -154,7 +136,8 @@ async function startMcp(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('[jsdesign-mcp] MCP stdio connected');
+  startBridgeHeartbeat();
+  console.error('[jsdesign-mcp] MCP stdio connected (HTTP client → bridge)');
 }
 
 await ensureBridge();

@@ -43,7 +43,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'get_plugin_status',
-    description: '查看即时设计插件是否已连接到本地 MCP。',
+    description: '查看即时设计插件是否已连接到本地 bridge。',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {

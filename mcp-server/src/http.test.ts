@@ -40,6 +40,7 @@ describe('HTTP API', () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
+    assert.equal(body.role, 'bridge');
     assert.equal(body.hasData, false);
     assert.equal(body.pluginConnected, false);
   });

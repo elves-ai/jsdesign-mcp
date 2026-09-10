@@ -14,6 +14,7 @@ export function createHttpApp(store: DesignStore, bridge: PluginBridge) {
     const data = store.get();
     res.json({
       ok: true,
+      role: 'bridge',
       pluginConnected: bridge.pluginConnected,
       connectionCount: bridge.connectionCount,
       hasData: data !== null,

@@ -13,6 +13,7 @@ export async function fetchHealth(port = DEFAULT_HTTP_PORT) {
   if (!res.ok) throw new Error(`health HTTP ${res.status}`);
   return (await res.json()) as {
     ok: boolean;
+    role?: string;
     pluginConnected: boolean;
     connectionCount: number;
     hasData: boolean;
