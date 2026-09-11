@@ -66,7 +66,7 @@ npm run bridge
 
 探活：`curl -s http://127.0.0.1:3847/health` 应返回 `"ok":true,"role":"bridge"`。已连接插件时还会有 `"pluginConnected":true`。
 
-端口：`JSDESIGN_MCP_PORT=3847`。空闲退出：`JSDESIGN_MCP_BRIDGE_IDLE_MS`（默认 `300000`，`0` 为不退出）。
+端口：`JSDESIGN_MCP_PORT=3847`。空闲退出：`JSDESIGN_MCP_BRIDGE_IDLE_MS`（默认 `300000`，`0` 为不退出）。要立刻释放端口用 `npm stop`。
 
 ## 2. Cursor MCP 配置
 
@@ -158,6 +158,7 @@ npm start
 |------|------|
 | `npm install` | 装依赖；`prepare` 会 `tsc` 到 `dist/` |
 | `npm start` | 开发调试：`tsx watch` 跑 `src/bridge-main.ts`，改文件自动重启 |
+| `npm stop` | 结束占用 3847 的监听进程（含 Cursor 旧版 `detached` 拉起的孤儿 bridge） |
 | `npm run bridge` | 跑打包产物 `dist/bridge-main.js` |
 | `npm run build` | 手动 `tsc`（改源码后给 Cursor / `bridge` 用） |
 | `npm run mcp` | 跑 MCP stdio 打包产物（通常由 Cursor 拉起） |
@@ -170,6 +171,7 @@ npm start
 | 现象 | 处理 |
 |------|------|
 | 插件「连接失败：本机 3847 无服务」 | 先 `npm run bridge`（开发用 `npm start`） |
+| `npm start` 后 Ctrl+C 仍占着 3847 | 旧版 MCP 会 `detached` 拉起孤儿 `bridge-main.js`（PPID=1）。`npm stop`，再 `npm run build` 让 Cursor 加载新 dist |
 | `lsof -iTCP:3847` 看到 `index.js` 而不是 `bridge-main.js` | 旧版把 HTTP 嵌在 MCP 里了，杀掉该进程后 `npm run bridge` |
 | `get_node_by_url` 提示未连接 | 插件点「连接」，保持窗口打开 |
 | 拉取超时（60s） | 确认插件仍连接、当前文件里有该节点 |

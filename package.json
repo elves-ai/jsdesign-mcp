@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "start": "npm start --prefix mcp-server",
+    "stop": "npm run stop --prefix mcp-server",
     "bridge": "npm run bridge --prefix mcp-server",
     "mcp": "npm run mcp --prefix mcp-server",
     "build": "npm run build --prefix mcp-server",

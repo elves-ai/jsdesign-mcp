@@ -8,6 +8,7 @@
     "prepare": "tsc",
     "build": "tsc",
     "start": "tsx watch src/bridge-main.ts",
+    "stop": "node scripts/stop-bridge.mjs",
     "bridge": "node dist/bridge-main.js",
     "mcp": "node dist/index.js",
     "test": "tsc && node --test dist/**/*.test.js"

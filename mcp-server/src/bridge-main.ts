@@ -20,9 +20,9 @@ try {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes('EADDRINUSE')) {
     console.error(
-      `[jsdesign-mcp] port ${port} already in use — bridge may already be running`
+      `[jsdesign-mcp] port ${port} already in use — run: npm stop`
     );
-    process.exit(0);
+    process.exit(1);
   }
   console.error('[jsdesign-mcp] failed to start bridge:', message);
   process.exit(1);
