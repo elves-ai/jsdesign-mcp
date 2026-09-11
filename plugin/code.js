@@ -1,6 +1,14 @@
 // JsDesign → Cursor MCP exporter (runs in JsDesign host)
 
 var MAX_NODES = 2000;
+var MAX_NODES_PREVIEW = 400;
+var MAX_PREVIEW_AREA = 1280 * 720;
+
+function yieldHost() {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, 0);
+  });
+}
 
 function isMixed(v) {
   try {
@@ -86,7 +94,7 @@ function firstSolidFromFills(fills) {
  * TEXT 的 node.fills 在组件实例 / 多样式时经常是 mixed 或空数组，
  * 需回退到 getRangeFills / getStyledTextSegments / 主组件对应节点。
  */
-function resolveTextFills(node) {
+function resolveTextFills(node, light) {
   var fills = node.fills;
   if (!isMixed(fills) && fills && Array.isArray(fills) && fills.length > 0) {
     return fills;
@@ -107,6 +115,10 @@ function resolveTextFills(node) {
       }
     } catch (e1) {
       // ignore
+    }
+    if (light) {
+      if (!isMixed(fills) && Array.isArray(fills)) return fills;
+      return [];
     }
     try {
       var allRange = node.getRangeFills(0, len);
@@ -134,7 +146,12 @@ function resolveTextFills(node) {
     }
   }
 
-  // 实例内文本：尝试从 mainComponent 同源节点取 fills
+  // 实例内文本：尝试从 mainComponent 同源节点取 fills（预览轻量模式跳过，避免卡死画布）
+  if (light) {
+    if (!isMixed(fills) && Array.isArray(fills)) return fills;
+    return [];
+  }
+
   try {
     var parent = node.parent;
     while (parent && parent.type !== 'INSTANCE') {
@@ -372,12 +389,12 @@ function safeProp(node, key) {
   }
 }
 
-function extractText(node) {
+function extractText(node, light) {
   if (node.type !== 'TEXT') return undefined;
   var color;
   var colorOpacity;
   try {
-    var solid = firstSolidFromFills(resolveTextFills(node));
+    var solid = firstSolidFromFills(resolveTextFills(node, light));
     if (solid) {
       color = solid.color;
       if (solid.opacity !== undefined && solid.opacity !== 1) colorOpacity = solid.opacity;
@@ -633,19 +650,22 @@ function stripBinaryForUi(value) {
   );
 }
 
-/** 需要导出内联 SVG 源码的矢量类节点（不含普通矩形，避免整页刷屏） */
+function shouldExportRootPreview(node) {
+  if (!node) return false;
+  var w = typeof node.width === 'number' ? node.width : 0;
+  var h = typeof node.height === 'number' ? node.height : 0;
+  return w * h > 0 && w * h <= MAX_PREVIEW_AREA;
+}
+
+/** 仅小尺寸 VECTOR / 布尔运算才 exportAsync(SVG)；椭圆/直线走几何，避免厂站大图卡死画布 */
 function shouldExportSvg(node) {
   if (!node || !node.type) return false;
   var t = String(node.type).toUpperCase();
-  return (
-    t === 'VECTOR' ||
-    t === 'BOOLEAN_OPERATION' ||
-    t === 'STAR' ||
-    t === 'POLYGON' ||
-    t === 'REGULAR_POLYGON' ||
-    t === 'LINE' ||
-    t === 'ELLIPSE'
-  );
+  if (t !== 'VECTOR' && t !== 'BOOLEAN_OPERATION') return false;
+  var w = typeof node.width === 'number' ? node.width : 0;
+  var h = typeof node.height === 'number' ? node.height : 0;
+  if (w > 256 || h > 256) return false;
+  return true;
 }
 
 /** 图标类切图优先 SVG（小尺寸 / icon_slice / 含矢量） */
@@ -1233,19 +1253,24 @@ function exportNodeSlice(node, kind) {
   });
 }
 
-function extractComponent(node) {
+function extractComponent(node, light) {
   if (node.type !== 'INSTANCE' && node.type !== 'COMPONENT') return undefined;
   var info = {};
-  try {
-    if (node.type === 'INSTANCE' && node.mainComponent) {
-      info.componentId = String(node.mainComponent.id);
-      info.componentName = node.mainComponent.name || undefined;
-    } else if (node.type === 'COMPONENT') {
-      info.componentId = String(node.id);
-      info.componentName = node.name || undefined;
+  if (!light) {
+    try {
+      if (node.type === 'INSTANCE' && node.mainComponent) {
+        info.componentId = String(node.mainComponent.id);
+        info.componentName = node.mainComponent.name || undefined;
+      } else if (node.type === 'COMPONENT') {
+        info.componentId = String(node.id);
+        info.componentName = node.name || undefined;
+      }
+    } catch (e) {
+      // mainComponent may throw on detached/missing
     }
-  } catch (e) {
-    // mainComponent may throw on detached/missing
+  } else if (node.type === 'COMPONENT') {
+    info.componentId = String(node.id);
+    info.componentName = node.name || undefined;
   }
   try {
     if (node.variantProperties && typeof node.variantProperties === 'object') {
@@ -1262,13 +1287,14 @@ function extractComponent(node) {
 
 function normalizeNode(node, state) {
   state.count += 1;
-  if (state.count > MAX_NODES) {
+  var limit = state.light ? MAX_NODES_PREVIEW : MAX_NODES;
+  if (state.count > limit) {
     state.truncated = true;
     return Promise.resolve(null);
   }
 
-  var sliceKind = resolveSliceKind(node, state);
-  var rawFills = node.type === 'TEXT' ? resolveTextFills(node) : node.fills;
+  var sliceKind = state.collectAssets === false ? null : resolveSliceKind(node, state);
+  var rawFills = node.type === 'TEXT' ? resolveTextFills(node, state.light) : node.fills;
   var fills = extractFills(rawFills);
   var data = {
     id: String(node.id),
@@ -1339,19 +1365,19 @@ function normalizeNode(node, state) {
   var effects = extractEffects(node.effects);
   if (effects) data.effects = effects;
 
-  var text = extractText(node);
+  var text = extractText(node, state.light);
   if (text) data.text = text;
 
   var imageHash = firstImageHash(fills);
   var image = extractImage(node, fills);
   if (image) data.image = image;
 
-  var component = extractComponent(node);
+  var component = extractComponent(node, state.light);
   if (component) data.component = component;
 
   var enrich = Promise.resolve();
 
-  if (shouldExportSvg(node)) {
+  if (state.collectAssets && shouldExportSvg(node)) {
     enrich = enrich
       .then(function () {
         return resolveNodeSvg(node);
@@ -1362,7 +1388,7 @@ function normalizeNode(node, state) {
       .catch(function () {});
   }
 
-  if (imageHash) {
+  if (state.collectAssets && imageHash) {
     enrich = enrich
       .then(function () {
         return exportImageByHash(imageHash);
@@ -1374,7 +1400,7 @@ function normalizeNode(node, state) {
   }
 
   // 自动切图：图标优先 SVG，其它 exportSettings / 回退 → PNG
-  if (sliceKind) {
+  if (state.collectAssets && sliceKind) {
     enrich = enrich
       .then(function () {
         return exportNodeSlice(node, sliceKind);
@@ -1396,19 +1422,29 @@ function normalizeNode(node, state) {
       count: state.count,
       truncated: state.truncated,
       isRoot: false,
+      collectAssets: state.collectAssets,
+      light: state.light,
       // 父级已切图则子容器不再重复切，避免图标套图标
       skipSlice: state.skipSlice || !!sliceKind,
     };
 
     var chain = Promise.resolve();
+    var walked = 0;
     for (var i = 0; i < node.children.length; i++) {
       (function (child) {
         if (child.visible === false) return;
         chain = chain.then(function () {
           if (childState.truncated) return;
-          return normalizeNode(child, childState).then(function (normalized) {
-            if (normalized) data.children.push(normalized);
-          });
+          walked += 1;
+          var step = function () {
+            return normalizeNode(child, childState).then(function (normalized) {
+              if (normalized) data.children.push(normalized);
+            });
+          };
+          if (walked % (state.collectAssets ? 12 : 30) === 0) {
+            return yieldHost().then(step);
+          }
+          return step();
         });
       })(node.children[i]);
     }
@@ -1518,9 +1554,19 @@ function resolveNode(nodeId) {
   return null;
 }
 
-function buildPayloadFromNode(root, meta) {
+function buildPayloadFromNode(root, meta, options) {
+  options = options || {};
+  var collectAssets = options.assets !== false;
+  var light = options.light === true;
   resetAssetCaches();
-  var state = { count: 0, truncated: false, isRoot: true, skipSlice: false };
+  var state = {
+    count: 0,
+    truncated: false,
+    isRoot: true,
+    skipSlice: !collectAssets,
+    collectAssets: collectAssets,
+    light: light,
+  };
   return normalizeNode(root, state).then(function (node) {
     if (!node) return null;
 
@@ -1546,7 +1592,10 @@ function buildPayloadFromNode(root, meta) {
       // optional
     }
 
-    // 根节点始终尝试导出 PNG 预览（与 fills 里的 IMAGE / 自动切图不同）
+    if (!collectAssets || !shouldExportRootPreview(root)) {
+      return toJsonSafe(payload);
+    }
+
     return exportNodePng(root, 'preview')
       .then(function (preview) {
         if (preview) payload.root.preview = preview;
@@ -1558,7 +1607,21 @@ function buildPayloadFromNode(root, meta) {
   });
 }
 
+var previewTimer = null;
+var previewSeq = 0;
+var mcpExporting = false;
+
+function scheduleSelectionPreview() {
+  if (mcpExporting) return;
+  if (previewTimer) clearTimeout(previewTimer);
+  previewTimer = setTimeout(function () {
+    previewTimer = null;
+    publishSelectionPreview();
+  }, 250);
+}
+
 function publishSelectionPreview() {
+  if (mcpExporting) return;
   var selection = jsDesign.currentPage.selection;
   if (!selection || selection.length === 0) {
     jsDesign.ui.postMessage({
@@ -1579,8 +1642,10 @@ function publishSelectionPreview() {
   }
   if (!root) root = selection[0];
 
-  buildPayloadFromNode(root, {})
+  var seq = ++previewSeq;
+  buildPayloadFromNode(root, {}, { assets: false, light: true })
     .then(function (payload) {
+      if (seq !== previewSeq) return;
       if (!payload) {
         jsDesign.ui.postMessage({
           type: 'selection-preview',
@@ -1599,6 +1664,7 @@ function publishSelectionPreview() {
       });
     })
     .catch(function (err) {
+      if (seq !== previewSeq) return;
       jsDesign.ui.postMessage({
         type: 'selection-preview',
         ok: false,
@@ -1610,10 +1676,11 @@ function publishSelectionPreview() {
 var UI_COLLAPSED = { width: 360, height: 52 };
 var UI_EXPANDED = { width: 420, height: 560 };
 
+if (typeof jsDesign !== 'undefined') {
 jsDesign.showUI(__html__, UI_COLLAPSED);
 
-jsDesign.on('selectionchange', publishSelectionPreview);
-publishSelectionPreview();
+jsDesign.on('selectionchange', scheduleSelectionPreview);
+scheduleSelectionPreview();
 
 jsDesign.ui.onmessage = function (msg) {
   if (!msg) return;
@@ -1649,8 +1716,10 @@ jsDesign.ui.onmessage = function (msg) {
     return;
   }
 
-  buildPayloadFromNode(root, meta)
+  mcpExporting = true;
+  buildPayloadFromNode(root, meta, { assets: true })
     .then(function (payload) {
+      mcpExporting = false;
       if (!payload) {
         jsDesign.ui.postMessage({
           type: 'fetch-node-result',
@@ -1668,6 +1737,7 @@ jsDesign.ui.onmessage = function (msg) {
       });
     })
     .catch(function (err) {
+      mcpExporting = false;
       jsDesign.ui.postMessage({
         type: 'fetch-node-result',
         requestId: requestId,
@@ -1676,3 +1746,11 @@ jsDesign.ui.onmessage = function (msg) {
       });
     });
 };
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    shouldExportSvg: shouldExportSvg,
+    shouldExportRootPreview: shouldExportRootPreview,
+  };
+}

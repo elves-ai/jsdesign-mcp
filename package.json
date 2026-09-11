@@ -7,6 +7,6 @@
     "bridge": "npm run bridge --prefix mcp-server",
     "mcp": "npm run mcp --prefix mcp-server",
     "build": "npm run build --prefix mcp-server",
-    "test": "npm test --prefix mcp-server"
+    "test": "npm test --prefix mcp-server && node --test plugin/code.test.js"
   }
 }
