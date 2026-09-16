@@ -10,6 +10,20 @@ function yieldHost() {
   });
 }
 
+/** preview=选中面板，mcp=get_node_by_url，full=完整切图（会卡住画布，默认不用） */
+function resolveExportMode(options) {
+  options = options || {};
+  if (options.mode === 'mcp' || options.mode === 'preview' || options.mode === 'full') {
+    return options.mode;
+  }
+  if (options.assets === false) return 'preview';
+  return 'full';
+}
+
+function shouldCollectHostExport(mode) {
+  return mode === 'full';
+}
+
 function isMixed(v) {
   try {
     return typeof v === 'symbol' || v === jsDesign.mixed;
@@ -534,7 +548,6 @@ function exportImageByHash(hash) {
         try {
           if (typeof jsDesign.base64Encode === 'function') {
             out.data = jsDesign.base64Encode(bytes);
-            out.dataUri = 'data:' + mimeType + ';base64,' + out.data;
           }
         } catch (e0) {
           // keep ref-only
@@ -713,7 +726,6 @@ function exportNodePng(node, kind) {
       try {
         if (typeof jsDesign.base64Encode === 'function') {
           out.data = jsDesign.base64Encode(bytes);
-          out.dataUri = 'data:' + mimeType + ';base64,' + out.data;
         }
       } catch (e1) {
         return undefined;
@@ -846,7 +858,6 @@ function svgStringToAsset(svg, node, kind) {
       mimeType: 'image/svg+xml',
       byteLength: bytes.length,
       data: data,
-      dataUri: 'data:image/svg+xml;base64,' + data,
       width: typeof node.width === 'number' ? node.width : undefined,
       height: typeof node.height === 'number' ? node.height : undefined,
     };
@@ -1286,14 +1297,16 @@ function extractComponent(node, light) {
 }
 
 function normalizeNode(node, state) {
+  var work = function () {
   state.count += 1;
-  var limit = state.light ? MAX_NODES_PREVIEW : MAX_NODES;
+  var limit = state.mode === 'preview' ? MAX_NODES_PREVIEW : MAX_NODES;
   if (state.count > limit) {
     state.truncated = true;
     return Promise.resolve(null);
   }
 
-  var sliceKind = state.collectAssets === false ? null : resolveSliceKind(node, state);
+  var collectHost = shouldCollectHostExport(state.mode);
+  var sliceKind = collectHost ? resolveSliceKind(node, state) : null;
   var rawFills = node.type === 'TEXT' ? resolveTextFills(node, state.light) : node.fills;
   var fills = extractFills(rawFills);
   var data = {
@@ -1377,7 +1390,7 @@ function normalizeNode(node, state) {
 
   var enrich = Promise.resolve();
 
-  if (state.collectAssets && shouldExportSvg(node)) {
+  if (collectHost && shouldExportSvg(node)) {
     enrich = enrich
       .then(function () {
         return resolveNodeSvg(node);
@@ -1388,7 +1401,7 @@ function normalizeNode(node, state) {
       .catch(function () {});
   }
 
-  if (state.collectAssets && imageHash) {
+  if (collectHost && imageHash) {
     enrich = enrich
       .then(function () {
         return exportImageByHash(imageHash);
@@ -1400,7 +1413,7 @@ function normalizeNode(node, state) {
   }
 
   // 自动切图：图标优先 SVG，其它 exportSettings / 回退 → PNG
-  if (state.collectAssets && sliceKind) {
+  if (collectHost && sliceKind) {
     enrich = enrich
       .then(function () {
         return exportNodeSlice(node, sliceKind);
@@ -1422,7 +1435,8 @@ function normalizeNode(node, state) {
       count: state.count,
       truncated: state.truncated,
       isRoot: false,
-      collectAssets: state.collectAssets,
+      mode: state.mode,
+      collectAssets: collectHost,
       light: state.light,
       // 父级已切图则子容器不再重复切，避免图标套图标
       skipSlice: state.skipSlice || !!sliceKind,
@@ -1441,7 +1455,7 @@ function normalizeNode(node, state) {
               if (normalized) data.children.push(normalized);
             });
           };
-          if (walked % (state.collectAssets ? 12 : 30) === 0) {
+          if (state.mode === 'mcp' || walked % (collectHost ? 12 : 30) === 0) {
             return yieldHost().then(step);
           }
           return step();
@@ -1454,6 +1468,12 @@ function normalizeNode(node, state) {
       return data;
     });
   });
+  };
+
+  if (state.mode === 'mcp') {
+    return yieldHost().then(work);
+  }
+  return work();
 }
 
 function collectTokens(root) {
@@ -1556,15 +1576,17 @@ function resolveNode(nodeId) {
 
 function buildPayloadFromNode(root, meta, options) {
   options = options || {};
-  var collectAssets = options.assets !== false;
-  var light = options.light === true;
+  var mode = resolveExportMode(options);
+  var collectHost = shouldCollectHostExport(mode);
+  var light = mode !== 'full';
   resetAssetCaches();
   var state = {
     count: 0,
     truncated: false,
     isRoot: true,
-    skipSlice: !collectAssets,
-    collectAssets: collectAssets,
+    mode: mode,
+    skipSlice: !collectHost,
+    collectAssets: collectHost,
     light: light,
   };
   return normalizeNode(root, state).then(function (node) {
@@ -1580,6 +1602,7 @@ function buildPayloadFromNode(root, meta, options) {
       tokens: collectTokens(node),
       root: node,
     };
+    if (mode !== 'full') payload.meta.assetsSkipped = true;
 
     try {
       if (jsDesign.root && jsDesign.root.name) {
@@ -1592,7 +1615,7 @@ function buildPayloadFromNode(root, meta, options) {
       // optional
     }
 
-    if (!collectAssets || !shouldExportRootPreview(root)) {
+    if (!collectHost || !shouldExportRootPreview(root)) {
       return toJsonSafe(payload);
     }
 
@@ -1643,7 +1666,7 @@ function publishSelectionPreview() {
   if (!root) root = selection[0];
 
   var seq = ++previewSeq;
-  buildPayloadFromNode(root, {}, { assets: false, light: true })
+  buildPayloadFromNode(root, {}, { mode: 'preview' })
     .then(function (payload) {
       if (seq !== previewSeq) return;
       if (!payload) {
@@ -1717,7 +1740,7 @@ jsDesign.ui.onmessage = function (msg) {
   }
 
   mcpExporting = true;
-  buildPayloadFromNode(root, meta, { assets: true })
+  buildPayloadFromNode(root, meta, { mode: 'mcp' })
     .then(function (payload) {
       mcpExporting = false;
       if (!payload) {
@@ -1752,5 +1775,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     shouldExportSvg: shouldExportSvg,
     shouldExportRootPreview: shouldExportRootPreview,
+    resolveExportMode: resolveExportMode,
+    shouldCollectHostExport: shouldCollectHostExport,
   };
 }

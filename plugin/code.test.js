@@ -25,4 +25,12 @@ describe('export policy', () => {
     assert.equal(plugin.shouldExportRootPreview({ width: 4000, height: 3000 }), false);
     assert.equal(plugin.shouldExportRootPreview({ width: 800, height: 600 }), true);
   });
+
+  it('mcp and preview never call host exportAsync', () => {
+    assert.equal(plugin.resolveExportMode({ mode: 'mcp' }), 'mcp');
+    assert.equal(plugin.resolveExportMode({ assets: false, light: true }), 'preview');
+    assert.equal(plugin.shouldCollectHostExport('mcp'), false);
+    assert.equal(plugin.shouldCollectHostExport('preview'), false);
+    assert.equal(plugin.shouldCollectHostExport('full'), true);
+  });
 });
