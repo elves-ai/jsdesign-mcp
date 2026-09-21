@@ -246,14 +246,23 @@
         .then(function (body) {
           if (!polling) return;
           if (body && body.job) {
+            var job = body.job;
             parent.postMessage(
               {
-                pluginMessage: {
-                  type: 'fetch-node',
-                  requestId: body.job.requestId,
-                  nodeId: body.job.nodeId,
-                  meta: body.job.meta || {},
-                },
+                pluginMessage:
+                  job.kind === 'assets'
+                    ? {
+                        type: 'export-assets',
+                        requestId: job.requestId,
+                        nodeIds: job.nodeIds || [],
+                        refs: job.refs || [],
+                      }
+                    : {
+                        type: 'fetch-node',
+                        requestId: job.requestId,
+                        nodeId: job.nodeId,
+                        meta: job.meta || {},
+                      },
               },
               '*'
             );
@@ -354,7 +363,7 @@
         return;
       }
 
-      if (msg.type === 'fetch-node-result') {
+      if (msg.type === 'fetch-node-result' || msg.type === 'export-assets-result') {
         fetch(BASE + '/plugin/result', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { materializePayloadAssets } from './assets.js';
+import { materializePayloadAssets, writeAssetBytes, writeAssetFromBase64 } from './assets.js';
 import type { DesignPayload } from './types.js';
 
 // 1x1 PNG
@@ -137,5 +137,68 @@ describe('materializePayloadAssets', () => {
     assert.equal(assets[0].mimeType, 'image/svg+xml');
     assert.ok(assets[0].path.endsWith('.svg'));
     assert.equal(fs.readFileSync(assets[0].path, 'utf8'), svg);
+  });
+});
+
+describe('按需切图落盘', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jsdesign-asset-write-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('writeAssetBytes 把原始字节写盘并返回清单项', () => {
+    const bytes = Buffer.from(PNG_B64, 'base64');
+    const item = writeAssetBytes(
+      {
+        key: 'hash-1',
+        nodeId: '1:2',
+        nodeName: 'Photo',
+        field: 'image',
+        kind: 'image_fill',
+        mimeType: 'image/png',
+        width: 40,
+        height: 40,
+        ref: 'hash-1',
+      },
+      bytes,
+      tmp
+    );
+    assert.ok(item);
+    assert.equal(item!.key, 'hash-1');
+    assert.equal(item!.byteLength, bytes.length);
+    assert.ok(item!.path.endsWith('.png'));
+    assert.equal(fs.readFileSync(item!.path).length, bytes.length);
+  });
+
+  it('writeAssetBytes 拒绝空字节', () => {
+    const item = writeAssetBytes(
+      { key: 'k', field: 'slice' },
+      Buffer.alloc(0),
+      tmp
+    );
+    assert.equal(item, undefined);
+  });
+
+  it('writeAssetFromBase64 兜底写出 SVG 源码', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+    const item = writeAssetFromBase64(
+      {
+        key: '3:1',
+        nodeId: '3:1',
+        field: 'slice',
+        kind: 'icon_slice',
+        mimeType: 'image/svg+xml',
+        data: Buffer.from(svg, 'utf8').toString('base64'),
+      },
+      tmp
+    );
+    assert.ok(item);
+    assert.ok(item!.path.endsWith('.svg'));
+    assert.equal(fs.readFileSync(item!.path, 'utf8'), svg);
   });
 });

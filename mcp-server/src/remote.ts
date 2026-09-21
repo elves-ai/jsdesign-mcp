@@ -1,4 +1,4 @@
-import type { DesignPayload } from './types.js';
+import type { AssetManifestItem, DesignPayload } from './types.js';
 import { isDesignPayload } from './types.js';
 import type { DesignStore } from './store.js';
 import type { PluginBridge } from './bridge.js';
@@ -65,14 +65,32 @@ export function createRemoteToolContext(
       localStore.set(body.payload);
       return body.payload;
     },
+    /** 按需切图：bridge 负责落盘与回填节点路径，这里把结果同步进本进程的 store */
+    async fetchAssets(req: { nodeIds?: string[]; refs?: string[] }) {
+      const res = await fetch(`${bridgeBase(port)}/internal/export-assets`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          nodeIds: req.nodeIds || [],
+          refs: req.refs || [],
+        }),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        items?: AssetManifestItem[];
+        error?: string;
+      };
+      if (!res.ok || !body.ok) {
+        throw new Error(body.error || `bridge error HTTP ${res.status}`);
+      }
+      const items = Array.isArray(body.items) ? body.items : [];
+      for (const item of items) {
+        localStore.attachAsset(item);
+      }
+      return items;
+    },
   } as PluginBridge;
 
-  const store = {
-    get: () => localStore.get(),
-    set: (p: DesignPayload) => localStore.set(p),
-    getAssets: () => localStore.getAssets(),
-    getAssetsDir: () => localStore.getAssetsDir(),
-  } as DesignStore;
-
-  return { store, bridge };
+  // localStore 本身就是完整 DesignStore（含 attachAsset / findAssetByKey），工具直接用
+  return { store: localStore, bridge };
 }

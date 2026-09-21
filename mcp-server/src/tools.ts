@@ -1,4 +1,4 @@
-import type { DesignPayload } from './types.js';
+import type { AssetManifestItem, DesignPayload } from './types.js';
 import type { DesignStore } from './store.js';
 import type { PluginBridge } from './bridge.js';
 import {
@@ -77,8 +77,29 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'list_assets',
     description:
-      '列出最近一次拉取时自动切图落盘的资源（本机绝对路径）。含 IMAGE 填充、exportSettings 图层、图标类容器（优先 SVG）、以及根节点 preview。',
+      '列出已落盘的图片/切图（本机绝对路径）。get_node_by_url 只拉结构不带字节，资产要靠 export_assets 按需导出后才会出现在这里。',
     inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'export_assets',
+    description:
+      '按需切图：把设计里的图片/切图导出成本机文件并返回路径。ids 传节点 id（82:2142 或 82-2142），refs 传图片哈希（节点的 image.ref）。字节由插件经 jsDesign.fetch 直传 bridge 落盘，不经过 base64；落盘后对应节点会带上 path，SVG 切图另带 svg 源码。单次最多 20 项，超出的会提示再调一次。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '节点 id 列表，例如 ["82:2142"]',
+        },
+        refs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '图片 hash 列表（节点上的 image.ref）',
+        },
+      },
+      required: [],
+    },
   },
 ];
 
@@ -143,6 +164,63 @@ export async function handleToolCall(
                 items: ctx.store.getAssets(),
               },
               root: stored.root,
+            },
+            null,
+            2
+          )
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return textResult(message);
+      }
+    }
+
+    case 'export_assets': {
+      const ids = Array.isArray(args.ids) ? args.ids.map((v) => String(v)) : [];
+      const refs = Array.isArray(args.refs) ? args.refs.map((v) => String(v)) : [];
+      if (ids.length === 0 && refs.length === 0) {
+        return textResult(
+          '请提供 ids（节点 id）或 refs（图片 hash）至少其一。节点 id 可用 list_nodes / get_node 获取，图片 hash 是节点上的 image.ref。'
+        );
+      }
+
+      // 图片按 ref（内容 hash）命中磁盘就不再往返；切图按节点 id 可能是旧像素，一律重导
+      const cached: AssetManifestItem[] = [];
+      const missingRefs: string[] = [];
+      for (const ref of refs) {
+        const hit = ctx.store.findAssetByKey(ref);
+        if (hit) cached.push(hit);
+        else missingRefs.push(ref);
+      }
+
+      if (ids.length === 0 && missingRefs.length === 0) {
+        return textResult(
+          JSON.stringify(
+            {
+              assetsDir: ctx.store.getAssetsDir(),
+              count: cached.length,
+              assets: cached,
+              cached: true,
+            },
+            null,
+            2
+          )
+        );
+      }
+
+      try {
+        const fetched = await ctx.bridge.fetchAssets({
+          nodeIds: ids,
+          refs: missingRefs,
+        });
+        const items = [...cached, ...fetched];
+        return textResult(
+          JSON.stringify(
+            {
+              assetsDir: ctx.store.getAssetsDir(),
+              count: items.length,
+              assets: items,
+              cached: false,
             },
             null,
             2

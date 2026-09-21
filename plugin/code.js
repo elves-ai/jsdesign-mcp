@@ -4,20 +4,28 @@ var MAX_NODES = 2000;
 var MAX_NODES_PREVIEW = 400;
 var MAX_PREVIEW_AREA = 1280 * 720;
 
+/** bridge HTTP 地址，与 ui.html 的 BASE 保持一致 */
+var BRIDGE_BASE = 'http://127.0.0.1:3847';
+/** 单次按需切图的项数上限，超出的项由 MCP 再调一次 */
+var MAX_ASSET_ITEMS = 20;
+/** exportAsync 单次输出的像素预算，超出的按 scale 降采样（见 slicePixelConstraint） */
+var MAX_SLICE_PIXELS = 4 * 1024 * 1024;
+
 function yieldHost() {
   return new Promise(function (resolve) {
     setTimeout(resolve, 0);
   });
 }
 
-/** preview=选中面板，mcp=get_node_by_url，full=完整切图（会卡住画布，默认不用） */
+/** preview=选中面板，mcp=get_node_by_url（只拉结构），full=整树带切图（会卡画布，仅显式指定） */
 function resolveExportMode(options) {
   options = options || {};
   if (options.mode === 'mcp' || options.mode === 'preview' || options.mode === 'full') {
     return options.mode;
   }
   if (options.assets === false) return 'preview';
-  return 'full';
+  // 兜底不走 full：整树切图会卡死画布，必须显式 opt-in
+  return 'mcp';
 }
 
 function shouldCollectHostExport(mode) {
@@ -520,50 +528,73 @@ function detectImageMime(bytes) {
 }
 
 /**
- * 通过 getImageByHash + getBytesAsync 导出真实图片字节（base64）。
- * MCP 收到后会落盘，节点上只保留 path。
+ * 按 hash 取图片原始字节。走 getImageByHash + getBytesAsync，不触发画布栅格化，
+ * 与 exportAsync 相比是便宜的取字节方式。
+ */
+function imageBytesByHash(hash) {
+  if (!hash || typeof jsDesign.getImageByHash !== 'function') {
+    return Promise.resolve(undefined);
+  }
+  var img;
+  try {
+    img = jsDesign.getImageByHash(hash);
+  } catch (e0) {
+    return Promise.resolve(undefined);
+  }
+  if (!img || typeof img.getBytesAsync !== 'function') {
+    return Promise.resolve(undefined);
+  }
+  return img
+    .getBytesAsync()
+    .then(function (bytes) {
+      var u8 = toUint8(bytes);
+      if (!u8 || !u8.length) return undefined;
+      var out = {
+        kind: 'image_fill',
+        ref: hash,
+        mimeType: detectImageMime(u8),
+        bytes: u8,
+        byteLength: u8.length,
+      };
+      if (typeof img.getSizeAsync !== 'function') return out;
+      return img.getSizeAsync().then(
+        function (size) {
+          if (size && typeof size.width === 'number') out.width = size.width;
+          if (size && typeof size.height === 'number') out.height = size.height;
+          return out;
+        },
+        function () {
+          return out;
+        }
+      );
+    })
+    .catch(function () {
+      return undefined;
+    });
+}
+
+/**
+ * 图片字节转 base64（full 模式用；按需切图走 imageBytesByHash）。
+ * 同一次导出内按 hash 复用。
  */
 function exportImageByHash(hash) {
   if (!hash) return Promise.resolve(undefined);
   if (imageBytesCache[hash]) return imageBytesCache[hash];
 
-  imageBytesCache[hash] = Promise.resolve()
-    .then(function () {
-      if (typeof jsDesign.getImageByHash !== 'function') {
-        return { kind: 'image_fill', ref: hash };
-      }
-      var img = jsDesign.getImageByHash(hash);
-      if (!img || typeof img.getBytesAsync !== 'function') {
-        return { kind: 'image_fill', ref: hash };
-      }
-      return img.getBytesAsync().then(function (bytes) {
-        if (!bytes || !bytes.length) return { kind: 'image_fill', ref: hash };
-        var mimeType = detectImageMime(bytes);
-        var out = {
-          kind: 'image_fill',
-          ref: hash,
-          mimeType: mimeType,
-          byteLength: bytes.length,
-        };
-        try {
-          if (typeof jsDesign.base64Encode === 'function') {
-            out.data = jsDesign.base64Encode(bytes);
-          }
-        } catch (e0) {
-          // keep ref-only
-        }
-        if (typeof img.getSizeAsync !== 'function') return out;
-        return img.getSizeAsync().then(
-          function (size) {
-            if (size && typeof size.width === 'number') out.width = size.width;
-            if (size && typeof size.height === 'number') out.height = size.height;
-            return out;
-          },
-          function () {
-            return out;
-          }
-        );
-      });
+  imageBytesCache[hash] = imageBytesByHash(hash)
+    .then(function (out) {
+      if (!out) return { kind: 'image_fill', ref: hash };
+      var data = bytesToBase64(out.bytes);
+      if (!data) return { kind: 'image_fill', ref: hash };
+      return {
+        kind: 'image_fill',
+        ref: hash,
+        mimeType: out.mimeType,
+        byteLength: out.byteLength,
+        width: out.width,
+        height: out.height,
+        data: data,
+      };
     })
     .catch(function () {
       return { kind: 'image_fill', ref: hash };
@@ -693,17 +724,37 @@ function preferSvgSlice(node, sliceKind) {
   return shouldExportSvg(node) || subtreeHasVectorLike(node) || shouldSliceIconContainer(node, false);
 }
 
+/** Uint8Array / ArrayBuffer / 类数组 → Uint8Array；跨 realm 时 instanceof 不可靠，故兜底 duck typing */
+function toUint8(bytes) {
+  if (!bytes) return undefined;
+  try {
+    if (typeof Uint8Array !== 'undefined' && bytes instanceof Uint8Array) return bytes;
+    if (typeof ArrayBuffer !== 'undefined' && bytes instanceof ArrayBuffer) {
+      return new Uint8Array(bytes);
+    }
+  } catch (e0) {
+    // 跨 realm，走下面的兜底
+  }
+  if (typeof bytes.length !== 'number' || !bytes.length) return undefined;
+  var out = typeof Uint8Array !== 'undefined' ? new Uint8Array(bytes.length) : [];
+  for (var i = 0; i < bytes.length; i++) out[i] = bytes[i] & 0xff;
+  return out;
+}
+
 /**
- * 导出节点 PNG（即时设计默认/合法格式）。
+ * 宿主 exportAsync 取字节（不做 base64）。
  * @param {string} [kind] image_fill | export_setting | icon_slice | preview
+ * @param {{type:string, value:number}} [constraint] 输出尺寸约束（官方 ExportSettings.constraint）
  */
-function exportNodePng(node, kind) {
+function exportNodePngBytes(node, kind, constraint) {
   if (!node || typeof node.exportAsync !== 'function') {
     return Promise.resolve(undefined);
   }
+  var settings = { format: 'PNG' };
+  if (constraint) settings.constraint = constraint;
   var result;
   try {
-    result = node.exportAsync({ format: 'PNG' });
+    result = node.exportAsync(settings);
   } catch (e0) {
     return Promise.resolve(undefined);
   }
@@ -713,28 +764,46 @@ function exportNodePng(node, kind) {
       : Promise.resolve(result);
   return promise
     .then(function (bytes) {
-      if (!bytes || !bytes.length) return undefined;
-      var mimeType = detectImageMime(bytes);
+      var u8 = toUint8(bytes);
+      if (!u8 || !u8.length) return undefined;
+      var mimeType = detectImageMime(u8);
       if (mimeType === 'application/octet-stream') mimeType = 'image/png';
-      var out = {
+      var scale =
+        constraint && constraint.type === 'SCALE' && typeof constraint.value === 'number'
+          ? constraint.value
+          : 1;
+      var w = typeof node.width === 'number' ? node.width : undefined;
+      var h = typeof node.height === 'number' ? node.height : undefined;
+      return {
         kind: kind || 'preview',
         mimeType: mimeType,
-        byteLength: bytes.length,
-        width: typeof node.width === 'number' ? node.width : undefined,
-        height: typeof node.height === 'number' ? node.height : undefined,
+        bytes: u8,
+        byteLength: u8.length,
+        // 报输出像素而不是节点原始尺寸，避免降采样后 MCP 误判分辨率
+        width: typeof w === 'number' ? Math.round(w * scale) : undefined,
+        height: typeof h === 'number' ? Math.round(h * scale) : undefined,
       };
-      try {
-        if (typeof jsDesign.base64Encode === 'function') {
-          out.data = jsDesign.base64Encode(bytes);
-        }
-      } catch (e1) {
-        return undefined;
-      }
-      return out.data ? out : undefined;
     })
     .catch(function () {
       return undefined;
     });
+}
+
+/** 导出节点 PNG 并转 base64（full 模式用；按需切图走 exportNodePngBytes） */
+function exportNodePng(node, kind) {
+  return exportNodePngBytes(node, kind).then(function (out) {
+    if (!out) return undefined;
+    var data = bytesToBase64(out.bytes);
+    if (!data) return undefined;
+    return {
+      kind: out.kind,
+      mimeType: out.mimeType,
+      byteLength: out.byteLength,
+      width: out.width,
+      height: out.height,
+      data: data,
+    };
+  });
 }
 
 function utf8ToBytes(str) {
@@ -868,13 +937,13 @@ function svgStringToAsset(svg, node, kind) {
 
 /**
  * 宿主 exportAsync 导出 SVG（产品本身支持 SVG 导出）。
- * 依次尝试 SVG / SVG_STRING；失败不抛到外层。
+ * format 只认官方枚举（JPG/PNG/Webp/SVG/PDF），非法值会打断整次拉取。
  */
 function exportNodeSvgViaAsync(node) {
   if (!node || typeof node.exportAsync !== 'function') {
     return Promise.resolve(undefined);
   }
-  var formats = ['SVG', 'SVG_STRING'];
+  var formats = ['SVG'];
 
   function tryAt(index) {
     if (index >= formats.length) return Promise.resolve(undefined);
@@ -1264,6 +1333,302 @@ function exportNodeSlice(node, kind) {
   });
 }
 
+/* ── 按需切图（export-assets 任务） ─────────────────────────────────
+ * 结构拉取（mode=mcp）不带任何字节，字节只在 MCP 明确要求时由这里导出，
+ * 并优先用 jsDesign.fetch 把原始字节直传 bridge 落盘，全程不经过 base64。
+ */
+
+function hasHostFetch() {
+  try {
+    return typeof jsDesign !== 'undefined' && typeof jsDesign.fetch === 'function';
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 节点是否显式设了某个 format 的导出设置（如设计稿里手设的 SVG 导出） */
+function hasExportFormat(node, format) {
+  try {
+    var es = node.exportSettings;
+    if (!es || !es.length) return false;
+    for (var i = 0; i < es.length; i++) {
+      if (es[i] && String(es[i].format).toUpperCase() === format) return true;
+    }
+  } catch (e) {
+    // exportSettings 在部分节点上不可读
+  }
+  return false;
+}
+
+/**
+ * 只有图标类才用 SVG，其余一律 PNG：
+ * - 设计稿里显式设了 SVG 导出设置（尊重作者意图）
+ * - 显式设了 PNG / JPG / Webp 导出设置时不自作主张给 SVG
+ * - 像图标的容器（8–256px、无文字，名称含 icon/图标 或子树含矢量）
+ * - 小尺寸纯矢量（VECTOR / 布尔运算 ≤256px）
+ */
+function shouldExportAssetAsSvg(node) {
+  if (!node) return false;
+  if (hasExportFormat(node, 'SVG')) return true;
+  if (
+    hasExportFormat(node, 'PNG') ||
+    hasExportFormat(node, 'JPG') ||
+    hasExportFormat(node, 'WEBP')
+  ) {
+    return false;
+  }
+  return shouldSliceIconContainer(node, false) || shouldExportSvg(node);
+}
+
+/**
+ * 显式请求的节点走哪条取字节路径：
+ * - 有 IMAGE 填充 → getBytesAsync（不碰画布，最省）
+ * - 图标类 → SVG
+ * - 其余 → exportAsync PNG，超过像素预算按 scale 降采样
+ */
+function planAssetRequest(node) {
+  if (!node) return null;
+  var fills = node.type === 'TEXT' ? resolveTextFills(node, true) : node.fills;
+  var normalized = extractFills(fills);
+  var hash = firstImageHash(normalized);
+  if (hash) {
+    return { key: hash, field: 'image', kind: 'image_fill', method: 'image', ref: hash };
+  }
+  return {
+    key: String(node.id),
+    field: 'slice',
+    kind: hasExportSettings(node) ? 'export_setting' : 'icon_slice',
+    method: shouldExportAssetAsSvg(node) ? 'svg' : 'png',
+  };
+}
+
+/** 超过像素预算就按 scale 降采样，避免一次导出把画布撑住 */
+function slicePixelConstraint(node) {
+  var w = typeof node.width === 'number' ? node.width : 0;
+  var h = typeof node.height === 'number' ? node.height : 0;
+  if (w <= 0 || h <= 0) return undefined;
+  var area = w * h;
+  if (area <= MAX_SLICE_PIXELS) return undefined;
+  var scale = Math.sqrt(MAX_SLICE_PIXELS / area);
+  return { type: 'SCALE', value: Math.round(scale * 1000) / 1000 };
+}
+
+/** SVG 切片：拿到源码后按 UTF-8 出字节（SVG 导出设置没有 constraint，与尺寸无关） */
+function svgAssetBytes(node, kind) {
+  return resolveNodeSvg(node).then(function (svg) {
+    if (!svg || typeof svg !== 'string') return undefined;
+    var u8 = toUint8(utf8ToBytes(svg));
+    if (!u8 || !u8.length) return undefined;
+    return {
+      kind: kind || 'icon_slice',
+      mimeType: 'image/svg+xml',
+      bytes: u8,
+      byteLength: u8.length,
+      width: typeof node.width === 'number' ? node.width : undefined,
+      height: typeof node.height === 'number' ? node.height : undefined,
+    };
+  });
+}
+
+function exportAssetItem(item) {
+  if (item.method === 'image') return imageBytesByHash(item.ref);
+  var node = item.nodeId ? resolveNode(item.nodeId) : null;
+  if (!node) return Promise.resolve(undefined);
+  if (item.method === 'svg') return svgAssetBytes(node, item.kind);
+  return exportNodePngBytes(node, item.kind, slicePixelConstraint(node));
+}
+
+function buildAssetQuery(requestId, meta) {
+  var parts = [];
+  function add(key, value) {
+    if (value === undefined || value === null || value === '') return;
+    parts.push(key + '=' + encodeURIComponent(String(value)));
+  }
+  add('requestId', requestId);
+  add('key', meta.key);
+  add('nodeId', meta.nodeId);
+  add('nodeName', meta.nodeName);
+  add('field', meta.field);
+  add('kind', meta.kind);
+  add('mime', meta.mimeType);
+  add('byteLength', meta.byteLength);
+  add('width', meta.width);
+  add('height', meta.height);
+  add('ref', meta.ref);
+  return parts.join('&');
+}
+
+/**
+ * 把原始字节 POST 给 bridge 落盘（jsDesign.fetch 的 body 支持 Uint8Array）。
+ * 返回 fallback=true 表示宿主没有 fetch 或网络层失败，调用方改走 base64 结果回传。
+ */
+function uploadAssetBytes(requestId, meta, bytes) {
+  if (!hasHostFetch()) return Promise.resolve({ ok: false, fallback: true });
+  var url = BRIDGE_BASE + '/plugin/asset-bin?' + buildAssetQuery(requestId, meta);
+  var call;
+  try {
+    call = jsDesign.fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: bytes,
+    });
+  } catch (e0) {
+    return Promise.resolve({ ok: false, fallback: true });
+  }
+  var promise = call && typeof call.then === 'function' ? call : Promise.resolve(call);
+  return promise
+    .then(function (res) {
+      if (!res || !res.ok) {
+        var status = res && res.status;
+        // 4xx 是元数据问题，兜底也救不回来；5xx / 无响应才值得退回 base64 通道
+        var worthFallback = !status || status >= 500;
+        return {
+          ok: false,
+          fallback: worthFallback,
+          error: 'bridge HTTP ' + status,
+        };
+      }
+      return res.json().then(
+        function (body) {
+          if (body && body.ok) return { ok: true, item: body.item };
+          return { ok: false, fallback: false, error: (body && body.error) || 'bridge rejected' };
+        },
+        function () {
+          return { ok: false, fallback: false, error: 'bridge 返回非 JSON' };
+        }
+      );
+    })
+    .catch(function () {
+      // 网络层失败（含 bridge 未启动）→ 退回 base64 通道，至少能拿到图
+      return { ok: false, fallback: true };
+    });
+}
+
+/** 上传元信息：只带标量字段，SVG 源码由 bridge 从落盘的 .svg 文件读回 */
+function metaForAsset(item, out) {
+  return {
+    key: item.key,
+    nodeId: item.nodeId,
+    nodeName: item.nodeName,
+    field: item.field,
+    kind: out.kind || item.kind,
+    mimeType: out.mimeType,
+    byteLength: out.byteLength,
+    width: out.width,
+    height: out.height,
+    ref: out.ref,
+  };
+}
+
+/**
+ * 按需切图主流程：逐项导出、逐项上传，项间 yieldHost 让出主线程。
+ * 超过 MAX_ASSET_ITEMS 的项不导出，交给 MCP 再调一次，避免单次任务过大。
+ */
+function runAssetJob(msg) {
+  var requestId = msg && msg.requestId;
+  var nodeIds = msg && Array.isArray(msg.nodeIds) ? msg.nodeIds : [];
+  var refs = msg && Array.isArray(msg.refs) ? msg.refs : [];
+  var skipped = [];
+  var queued = [];
+
+  for (var i = 0; i < refs.length; i++) {
+    var ref = safeString(refs[i]);
+    if (ref) {
+      queued.push({ key: ref, field: 'image', kind: 'image_fill', method: 'image', ref: ref });
+    }
+  }
+
+  for (var j = 0; j < nodeIds.length; j++) {
+    var wanted = safeString(nodeIds[j]);
+    if (!wanted) continue;
+    var node = resolveNode(wanted);
+    if (!node) {
+      skipped.push({ key: wanted, reason: '当前文件中找不到该节点' });
+      continue;
+    }
+    var plan = planAssetRequest(node);
+    if (!plan) {
+      skipped.push({ key: wanted, reason: '该节点没有可导出的图片或切图' });
+      continue;
+    }
+    plan.nodeId = String(node.id);
+    plan.nodeName = node.name || 'Untitled';
+    var duplicated = false;
+    for (var k = 0; k < queued.length; k++) {
+      if (queued[k].key === plan.key) {
+        duplicated = true;
+        break;
+      }
+    }
+    if (!duplicated) queued.push(plan);
+  }
+
+  var part = queued.slice(0, MAX_ASSET_ITEMS);
+  for (var m = MAX_ASSET_ITEMS; m < queued.length; m++) {
+    skipped.push({
+      key: queued[m].key,
+      reason: '单次上限 ' + MAX_ASSET_ITEMS + ' 项，请再调用一次取余下部分',
+    });
+  }
+
+  var assets = [];
+  var chain = Promise.resolve();
+
+  part.forEach(function (item) {
+    chain = chain
+      .then(function () {
+        return yieldHost();
+      })
+      .then(function () {
+        return exportAssetItem(item);
+      })
+      .then(function (out) {
+        if (!out || !out.bytes) {
+          skipped.push({ key: item.key, reason: '导出为空' });
+          return undefined;
+        }
+        var meta = metaForAsset(item, out);
+        return uploadAssetBytes(requestId, meta, out.bytes).then(function (res) {
+          if (res.ok && res.item) {
+            assets.push(res.item);
+            return undefined;
+          }
+          if (!res.fallback) {
+            skipped.push({ key: item.key, reason: res.error || '上传失败' });
+            return undefined;
+          }
+          var data = bytesToBase64(out.bytes);
+          if (!data) {
+            skipped.push({ key: item.key, reason: '字节编码失败' });
+            return undefined;
+          }
+          var fallback = {
+            key: meta.key,
+            nodeId: meta.nodeId,
+            nodeName: meta.nodeName,
+            field: meta.field,
+            kind: meta.kind,
+            mimeType: meta.mimeType,
+            byteLength: meta.byteLength,
+            width: meta.width,
+            height: meta.height,
+            ref: meta.ref,
+            data: data,
+          };
+          assets.push(fallback);
+          return undefined;
+        });
+      })
+      .catch(function (err) {
+        skipped.push({ key: item.key, reason: (err && err.message) || String(err) });
+      });
+  });
+
+  return chain.then(function () {
+    return { assets: assets, skipped: skipped };
+  });
+}
+
 function extractComponent(node, light) {
   if (node.type !== 'INSTANCE' && node.type !== 'COMPONENT') return undefined;
   var info = {};
@@ -1574,6 +1939,29 @@ function resolveNode(nodeId) {
   return null;
 }
 
+/** 宿主侧的文件标识：可读名与 fileKey 分别取值，缺失不报错 */
+function readHostFileInfo() {
+  var info = {};
+  try {
+    if (typeof jsDesign !== 'undefined') {
+      if (jsDesign.root && jsDesign.root.name) info.rootName = jsDesign.root.name;
+      if (jsDesign.fileKey) info.fileKey = jsDesign.fileKey;
+    }
+  } catch (e) {
+    // optional
+  }
+  return info;
+}
+
+/**
+ * 可读文件名优先，MCP 链接里的 fileKey 只作兜底。
+ * 反过来的话，贴完整链接时 fileName 会变成不透明的 fileKey。
+ */
+function resolveFileName(meta, hostInfo) {
+  hostInfo = hostInfo || readHostFileInfo();
+  return hostInfo.rootName || hostInfo.fileKey || (meta && meta.fileKey) || undefined;
+}
+
 function buildPayloadFromNode(root, meta, options) {
   options = options || {};
   var mode = resolveExportMode(options);
@@ -1597,23 +1985,12 @@ function buildPayloadFromNode(root, meta, options) {
         pageName: jsDesign.currentPage.name,
         exportedAt: new Date().toISOString(),
         truncated: state.truncated,
-        fileName: (meta && meta.fileKey) || undefined,
+        fileName: resolveFileName(meta),
       },
       tokens: collectTokens(node),
       root: node,
     };
     if (mode !== 'full') payload.meta.assetsSkipped = true;
-
-    try {
-      if (jsDesign.root && jsDesign.root.name) {
-        payload.meta.fileName = payload.meta.fileName || jsDesign.root.name;
-      }
-      if (jsDesign.fileKey) {
-        payload.meta.fileName = payload.meta.fileName || jsDesign.fileKey;
-      }
-    } catch (e) {
-      // optional
-    }
 
     if (!collectHost || !shouldExportRootPreview(root)) {
       return toJsonSafe(payload);
@@ -1719,6 +2096,31 @@ jsDesign.ui.onmessage = function (msg) {
     return;
   }
 
+  if (msg.type === 'export-assets') {
+    mcpExporting = true;
+    runAssetJob(msg)
+      .then(function (out) {
+        mcpExporting = false;
+        jsDesign.ui.postMessage({
+          type: 'export-assets-result',
+          requestId: msg.requestId,
+          ok: true,
+          assets: out.assets,
+          skipped: out.skipped,
+        });
+      })
+      .catch(function (err) {
+        mcpExporting = false;
+        jsDesign.ui.postMessage({
+          type: 'export-assets-result',
+          requestId: msg.requestId,
+          ok: false,
+          error: (err && err.message) || String(err),
+        });
+      });
+    return;
+  }
+
   if (msg.type !== 'fetch-node') return;
 
   var requestId = msg.requestId;
@@ -1777,5 +2179,11 @@ if (typeof module !== 'undefined' && module.exports) {
     shouldExportRootPreview: shouldExportRootPreview,
     resolveExportMode: resolveExportMode,
     shouldCollectHostExport: shouldCollectHostExport,
+    slicePixelConstraint: slicePixelConstraint,
+    planAssetRequest: planAssetRequest,
+    buildAssetQuery: buildAssetQuery,
+    hasHostFetch: hasHostFetch,
+    toUint8: toUint8,
+    resolveFileName: resolveFileName,
   };
 }

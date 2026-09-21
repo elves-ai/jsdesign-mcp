@@ -59,9 +59,12 @@ export type AssetBinary = {
 };
 
 export type AssetManifestItem = {
-  nodeId: string;
-  nodeName: string;
+  /** 节点 id；纯图片 hash 请求（refs）没有节点时为 undefined */
+  nodeId?: string;
+  nodeName?: string;
   field: 'image' | 'slice' | 'preview';
+  /** 去重键：图片填充是 ref（hash），切图是节点 id */
+  key?: string;
   kind?: AssetBinary['kind'];
   path: string;
   mimeType?: string;
@@ -69,6 +72,22 @@ export type AssetManifestItem = {
   width?: number;
   height?: number;
   ref?: string;
+};
+
+/** 插件上传/兜底回传的资产元信息；path 由 bridge 落盘时补全 */
+export type AssetWriteMeta = {
+  key?: string;
+  nodeId?: string;
+  nodeName?: string;
+  field: AssetManifestItem['field'];
+  kind?: AssetBinary['kind'];
+  mimeType?: string;
+  byteLength?: number;
+  width?: number;
+  height?: number;
+  ref?: string;
+  /** SVG 切图的源码，落盘后写到节点的 svg 字段 */
+  svg?: string;
 };
 
 export type DesignNode = {
